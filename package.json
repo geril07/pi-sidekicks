@@ -1,0 +1,10 @@
+{
+  "name": "pi-sidekicks",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Personal asynchronous, role-based Pi agents; research and setup stage",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

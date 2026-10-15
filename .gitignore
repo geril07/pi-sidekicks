@@ -1,0 +1,10 @@
+/.refs/
+/node_modules/
+/dist/
+/coverage/
+/.pi/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store

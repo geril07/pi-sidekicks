@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-15T21:33:54.011497+00:00",
+  "references": [
+    {
+      "repository": "williamcr01/pi-subagents",
+      "url": "https://github.com/williamcr01/pi-subagents",
+      "path": ".refs/williamcr01/pi-subagents",
+      "commit": "a720295a0d1bec9440962b2856373cda4c2a27d2",
+      "commitDate": "2026-09-30T13:22:52+02:00",
+      "packageVersion": "0.2.7",
+      "runtimeCodeLines": 3026,
+      "runtimeCodeFiles": 10,
+      "testCodeLines": 1675
+    },
+    {
+      "repository": "nicobailon/pi-subagents",
+      "url": "https://github.com/nicobailon/pi-subagents",
+      "path": ".refs/nicobailon/pi-subagents",
+      "commit": "475600bc8156bd620425f1956cb7b95c53ee4458",
+      "commitDate": "2026-10-15T06:51:18-07:00",
+      "packageVersion": "0.78.0",
+      "runtimeCodeLines": 97722,
+      "runtimeCodeFiles": 327,
+      "testCodeLines": 122956
+    },
+    {
+      "repository": "championswimmer/pi-subagent-manager",
+      "url": "https://github.com/championswimmer/pi-subagent-manager",
+      "path": ".refs/championswimmer/pi-subagent-manager",
+      "commit": "25783afbd9c5c0960a2e6d325c3354d564dfa680",
+      "commitDate": "2026-10-14T04:30:25Z",
+      "packageVersion": "0.29.2",
+      "runtimeCodeLines": 12417,
+      "runtimeCodeFiles": 34,
+      "testCodeLines": 21850
+    },
+    {
+      "repository": "mavam/pi-agents",
+      "url": "https://github.com/mavam/pi-agents",
+      "path": ".refs/mavam/pi-agents",
+      "commit": "c165bd0cd109dabcbb7c99022a303ae0a5d6f2ca",
+      "commitDate": "2026-10-15T09:45:20Z",
+      "packageVersion": "0.33.0",
+      "runtimeCodeLines": 11564,
+      "runtimeCodeFiles": 59,
+      "testCodeLines": 6256
+    },
+    {
+      "repository": "purboo/pi-durable-subagents",
+      "url": "https://github.com/purboo/pi-durable-subagents",
+      "path": ".refs/purboo/pi-durable-subagents",
+      "commit": "e8e2746f19018746952e85623349ec6803c2f759",
+      "commitDate": "2026-10-15T23:41:10+08:00",
+      "packageVersion": "1.0.41",
+      "runtimeCodeLines": 12456,
+      "runtimeCodeFiles": 98,
+      "testCodeLines": 15842
+    },
+    {
+      "repository": "tintinweb/pi-subagents",
+      "url": "https://github.com/tintinweb/pi-subagents",
+      "path": ".refs/tintinweb/pi-subagents",
+      "commit": "ca93a5247e72e7053fcd10bea7125d6c4205f949",
+      "commitDate": "2026-10-13T20:37:47+02:00",
+      "packageVersion": "0.22.0",
+      "runtimeCodeLines": 13167,
+      "runtimeCodeFiles": 60,
+      "testCodeLines": 32919
+    },
+    {
+      "repository": "badlogic/pi-subagent",
+      "url": "https://github.com/badlogic/pi-subagent",
+      "path": ".refs/badlogic/pi-subagent",
+      "commit": "4fc1fe5178d1a2b474794a5ee39e7295844e9d3c",
+      "commitDate": "2026-09-30T13:06:44+02:00",
+      "packageVersion": "0.1.0",
+      "runtimeCodeLines": 832,
+      "runtimeCodeFiles": 3,
+      "testCodeLines": 0
+    }
+  ]
+}
