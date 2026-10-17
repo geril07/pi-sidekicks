@@ -3,6 +3,9 @@
 Observed during research/setup, 2026-10-16 local date. This is a non-secret
 compatibility snapshot, not a portable config to install automatically.
 
+The first implementation targets Pi 1.3.x, observed locally on 2026-10-18. The
+1.2.0 configuration and role observations below remain a historical snapshot.
+
 Original dotfiles root: `/home/geril/my/dotfiles`.
 Relevant files are under `home/.pi/agent/`; project-local legacy settings are
 under `.pi/` in that dotfiles checkout. Paths may change after moving repositories.

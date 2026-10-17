@@ -3,6 +3,11 @@
 This is a working recommendation from research, not an implemented design or a
 final decision. Product requirements live in [scope.md](scope.md).
 
+The newer [implementation brief](implementation-brief.md) records the implemented
+technical design and verification. Use it for current work; the proposals and
+open-decision list below are historical. The implementation targets Pi 1.3.x;
+the 1.2.0 API observations below describe the original research baseline.
+
 ## Recommended starting point
 
 Use one ordinary Pi child process per agent, controlled over Pi RPC.

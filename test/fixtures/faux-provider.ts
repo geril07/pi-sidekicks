@@ -1,0 +1,88 @@
+import { appendFileSync } from "node:fs";
+import { fauxProvider, fauxAssistantMessage, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { matchesKey } from "@earendil-works/pi-tui";
+
+export default function fixture(pi: ExtensionAPI): void {
+  const log = (event: object) => appendFileSync(process.env.SIDEKICKS_TEST_LOG!, `${JSON.stringify(event)}\n`);
+  const faux = fauxProvider({ provider: "sidekicks-test", models: [{ id: "scripted", reasoning: true }], tokensPerSecond: 0 });
+  pi.registerProvider(faux.provider);
+  const scenario = process.env.SIDEKICKS_TEST_SCENARIO ?? "pause";
+  pi.registerCommand("qa-reload", { description: "Test-only reload", handler: async (_args, ctx) => { await ctx.reload(); } });
+  let unsubscribe: (() => void) | undefined;
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx.mode !== "tui") return;
+    unsubscribe = ctx.ui.onTerminalInput((data) => {
+      if (matchesKey(data, "ctrl+alt+d")) {
+        void ctx.ui.input("QA unrelated dialog", "type here").then((value) => ctx.ui.notify(`QA dialog result: ${value}`, "info"));
+        return { consume: true };
+      }
+      if (matchesKey(data, "ctrl+alt+q")) { ctx.shutdown(); return { consume: true }; }
+    });
+  });
+  pi.on("session_shutdown", () => { unsubscribe?.(); });
+  let queued = false;
+  let continuation = false;
+  const answered = new Set<string>();
+  pi.on("agent_before_settle", () => {
+    if (scenario === "continuation" && !continuation) { continuation = true; return { continue: true }; }
+  });
+  pi.on("message_end", (event) => {
+    if (!queued && scenario === "withdraw" && event.message.role === "assistant") {
+      queued = true;
+      pi.sendUserMessage("Parent guidance: continue", { deliverAs: "steer" });
+    }
+  });
+  pi.registerTool({ name: "effect", label: "Effect", parameters: Type.Object({}), executionMode: process.env.SIDEKICKS_TEST_SEQUENTIAL ? "sequential" : "parallel",
+    description: "Test-only side effect",
+    async execute() { log({ effect: true }); return { content: [{ type: "text", text: "effect" }], details: undefined }; },
+  });
+  pi.registerTool({ name: "nested_question", label: "Nested question", parameters: Type.Object({}), description: "Test nested invocation",
+    async execute(_id, _args, _signal, _update, ctx) {
+      const result = await ctx.executeTool("ask_parent", { question: "Nested question?" });
+      log({ nestedRejected: result.isError });
+      return { content: [{ type: "text", text: "Nested invocation rejected" }], details: result };
+    },
+  });
+  pi.registerTool({ name: "human_dialogs", label: "Human dialogs", parameters: Type.Object({}), description: "Test child extension dialogs",
+    async execute(_id, _args, _signal, _update, ctx) {
+      const confirmed = await ctx.ui.confirm("QA confirm", "Explicit human choice", { timeout: 10_000 });
+      const selected = await ctx.ui.select("QA select", ["A", "B"], { timeout: 10_000 });
+      const input = await ctx.ui.input("QA input", "type here", { timeout: 10_000 });
+      const edited = await ctx.ui.editor("QA editor", "prefill");
+      log({ dialogs: { confirmed, selected, input, edited } });
+      return { content: [{ type: "text", text: "Dialogs complete" }], details: { confirmed, selected, input, edited } };
+    },
+  });
+  const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
+    log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent",
+      lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content });
+    if (["orchestrator", "dialogs"].includes(scenario) && !process.env.PI_SIDEKICKS_CHILD) {
+      if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("sidekick", {
+        action: "launch", role: "worker", task: "Ask which option, then finish",
+        ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH ?? '{"model":"sidekicks-test/scripted","thinking":"low"}'),
+      }), { stopReason: "toolUse" });
+      const text = context.messages.map((message) => JSON.stringify(message)).join("\n");
+      const questions = [...text.matchAll(/\\"childId\\":\\"([^"\\]+)\\",\\"runId\\":\\"[^"\\]+\\",\\"questionId\\":\\"([^"\\]+)\\"/g)];
+      const question = questions.at(-1);
+      if (question && !answered.has(question[2])) {
+        answered.add(question[2]);
+        return fauxAssistantMessage(fauxToolCall("sidekick", { action: "answer", child: question[1], questionId: question[2], answer: "Choose A" }), { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage(text.includes("Sidekick result") ? "FINAL: child completion received automatically." : "Parent remains usable while the child works.");
+    }
+    if (scenario === "reopen" && context.messages.some((message) => message.role === "assistant") && state.callCount === 1) {
+      return fauxAssistantMessage("Reopened with the earlier conversation.");
+    }
+    if (["queued", "followup"].includes(scenario) && state.callCount === 1) pi.sendUserMessage("Parent guidance: continue", { deliverAs: scenario === "followup" ? "followUp" : "steer" });
+    if (state.callCount === 1) {
+      if (scenario === "dialogs") return fauxAssistantMessage(fauxToolCall("human_dialogs", {}), { stopReason: "toolUse" });
+      const names = JSON.parse(process.env.SIDEKICKS_TEST_BATCH ?? '["effect","ask_parent","effect"]') as string[];
+      return fauxAssistantMessage(names.map((name, i) => fauxToolCall(name,
+        name === "ask_parent" ? { question: scenario === "malformed" ? "" : "Which option?" } : {}, { id: `call-${i}` })), { stopReason: "toolUse" });
+    }
+    return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
+  };
+  faux.setResponses(Array.from({ length: 12 }, () => script));
+}

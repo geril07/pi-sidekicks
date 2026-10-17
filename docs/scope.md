@@ -2,7 +2,10 @@
 
 Updated from the user's latest setup request on 2026-10-16 (operator local date).
 This document supersedes the broader viewer-first recommendations in the research.
-Nothing below is implemented.
+The first implementation now covers this scope in source. Local scripted-provider
+verification and remaining live-integration gaps are recorded in
+[the implementation brief](implementation-brief.md); this is not a claim that the
+operator's provider/MCP setup has been verified.
 
 ## Product intent
 
@@ -11,7 +14,7 @@ than three. The operator values direct control, visible progress, and a small
 model-facing API over a general orchestration framework.
 
 This is a separate project, not a commitment to maintain a fork of the current
-large extension. The implementation base remains open.
+large extension. The first implementation starts fresh over ordinary Pi RPC.
 
 ## Confirmed requirements
 
@@ -66,12 +69,14 @@ features permanently. Revisit only for a concrete need.
 Required: a role name, description, instruction body, and optional model/thinking.
 Use the existing role files as use cases, not as a schema to copy wholesale.
 
-Proposed precedence is per-launch override > role default > current parent default.
-Confirm it during implementation. Model selection must use Pi's actual available
+Precedence is per-launch override > role default > current parent default.
+Model selection must use Pi's actual available
 catalog and disclose the effective model/thinking rather than silently substitute.
 
-Tools/extension restrictions, append-vs-replace prompts, mutable defaults, and
-changing models on an existing child's next run are not decided.
+Initial implementation choices: append role instructions to the normal Pi prompt,
+ignore legacy tool/skill restrictions, and keep model/thinking fixed for a child's
+conversation. No mutable-defaults interface is added. These defaults can be adjusted
+after the first implementation; see the implementation brief.
 
 ## V1 verification scenarios
 
