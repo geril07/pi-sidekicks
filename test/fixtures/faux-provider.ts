@@ -75,13 +75,13 @@ export default function fixture(pi: ExtensionAPI): void {
         ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH ?? '{"model":"sidekicks-test/scripted","thinking":"low"}'),
       }), { stopReason: "toolUse" });
       const text = context.messages.map((message) => JSON.stringify(message)).join("\n");
-      const questions = [...text.matchAll(/\\"childId\\":\\"([^"\\]+)\\",\\"runId\\":\\"[^"\\]+\\",\\"questionId\\":\\"([^"\\]+)\\"/g)];
+      const questions = [...text.matchAll(/Sidekick (\S+) asks \(question (\w+)/g)];
       const question = questions.at(-1);
       if (question && !answered.has(question[2])) {
         answered.add(question[2]);
         return fauxAssistantMessage(fauxToolCall("subagent", { action: "answer", child: question[1], questionId: question[2], answer: "Choose A" }), { stopReason: "toolUse" });
       }
-      return fauxAssistantMessage(text.includes("Sidekick result") ? "FINAL: child completion received automatically." : "Parent remains usable while the child works.");
+      return fauxAssistantMessage(/Sidekick \S+ completed/.test(text) ? "FINAL: child completion received automatically." : "Parent remains usable while the child works.");
     }
     if (scenario === "reopen" && context.messages.some((message) => message.role === "assistant") && state.callCount === 1) {
       return fauxAssistantMessage("Reopened with the earlier conversation.");

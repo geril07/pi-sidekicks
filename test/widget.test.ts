@@ -1,102 +1,119 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Editor, TuiMainScreen, visibleWidth, type TUI, type Component, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import type { ExtensionContext, Theme, KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { StatusWidget } from "../src/widget.ts";
 import type { ChildSnapshot } from "../src/manager.ts";
 
-const child = (id: string): ChildSnapshot => ({ id, name: `Worker ${id}`, agent: "worker", model: "local/model", thinking: "low",
-  run: { id: `run-${id}`, state: "running", delivered: false }, connected: true, activity: "using read", sessionPath: `/child-${id}.jsonl` });
+const child = (id: string): ChildSnapshot => ({ id, name: `worker-${id}`, agent: "worker", model: "local/model", thinking: "low",
+  run: { id: `run-${id}`, state: "running", delivered: false, startedAt: Date.now() - 65_000 }, connected: true, activity: "read src/a.ts", sessionPath: `/child-${id}.jsonl` });
 
-test("widget is hidden without children and remains available for existing conversations", () => {
+test("widget is hidden without children and summarizes states once they exist", () => {
   const children: ChildSnapshot[] = [];
   const widget = new StatusWidget(() => children);
   assert.deepEqual(widget.render(120), []);
-  widget.toggle();
-  assert.deepEqual(widget.render(120), []);
-  children.push(child("one"));
-  assert.match(widget.render(120)[0], /1 working/);
-  children[0].run.state = "completed";
-  assert.match(widget.render(120)[1], /completed/);
+  children.push(child("one"), child("two"));
+  children[1].run = { ...children[1].run, state: "failed", endedAt: Date.now() };
+  const [summary, ...rows] = widget.render(120);
+  assert.match(summary, /1 running/);
+  assert.match(summary, /1 failed/);
+  assert.doesNotMatch(summary, /ctrl\+alt/);
+  assert.deepEqual(rows, []);
   children.length = 0;
   assert.deepEqual(widget.render(120), []);
 });
 
-test("widget bounds Unicode/activity, sanitizes terminal controls, and click does not request focus", () => {
+test("rows show name, model, state, bounded activity and elapsed time; clicks toggle and open details", () => {
   const children = [child("one"), child("two")];
   children[0].name = "名字".repeat(40) + "\x1b]52;bad\x07";
+  children[1].run = { ...children[1].run, state: "completed", result: "line one\nline two", endedAt: Date.now() };
   const widget = new StatusWidget(() => children);
-  assert.equal(widget.render(40).length, 1);
-  const response = widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent);
-  assert.deepEqual(response, { handled: true });
-  assert.equal(widget.render(40).length, 3);
+  assert.equal(widget.render(80).length, 1);
+  assert.deepEqual(widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent), { handled: true });
+  const lines = widget.render(120);
+  assert.equal(lines.length, 3);
+  assert.match(lines[2], /worker-two/);
+  assert.match(lines[2], /local\/model|model:low/);
+  assert.match(lines[2], /completed/);
+  assert.match(lines[1], /1m05s|1m0\ds/);
   for (const width of [1, 10, 40, 80]) {
     for (const line of widget.render(width)) { assert(visibleWidth(line) <= width); assert(!line.includes("\x1b]")); assert(!line.includes("\x07")); }
   }
-  widget.selectedId = "two";
-  children.unshift(child("new"));
-  assert.match(widget.render(200).find((line) => line.startsWith("›"))!, /Worker two/);
+  assert.deepEqual(widget.handleMouse({ type: "click", button: "left", y: 2 } as TuiMouseEvent), { handled: true });
+  const detailed = widget.render(120).join("\n");
+  assert.match(detailed, /line one/);
+  assert.match(detailed, /child-two\.jsonl/);
+  widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent);
+  assert.equal(widget.render(120).length, 1);
 });
 
-test("real TUI overlay navigation preserves a mid-line draft and paste, and does not steal a dialog's focus", async (t) => {
-  let input: (data: string) => void = () => {};
+test("down on an empty editor enters row selection; other input, drafts, and dialogs are untouched", async (t) => {
   const terminal: Terminal = {
     columns: 120, rows: 40, kittyProtocolActive: false,
     start: (handler) => { input = handler; }, stop() {}, async drainInput() {}, write() {}, moveBy() {}, hideCursor() {}, showCursor() {},
     clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
   };
+  let input: (data: string) => void = () => {};
   const tui = new TuiMainScreen(terminal);
   t.after(() => tui.stop());
   const identity = (text: string) => text;
-  const editor = new Editor(tui, { borderColor: identity, selectList: { selectedPrefix: identity, selectedText: identity,
-    description: identity, scrollInfo: identity, noMatch: identity } });
+  const theme = { borderColor: identity, selectList: { selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity } };
+  const editor = new Editor(tui, theme);
   tui.addChild(editor);
   tui.setFocus(editor);
   tui.start();
-  editor.setText("alpha beta");
-  for (let i = 0; i < 4; i++) input("\x1b[D");
-  const cursor = editor.getCursor();
-  const widget = new StatusWidget(() => [child("one"), child("two")]);
-  const ctx = {
-    mode: "tui",
-    ui: {
-      setWidget: (_key: string, factory: (tui: TUI, theme: Theme) => Component) => { tui.addChild(factory(tui, {} as Theme)); },
-      custom: (factory: (tui: TUI, theme: Theme, keys: KeybindingsManager, done: () => void) => Component) => new Promise<void>((resolve) => {
-        const component = factory(tui, {} as Theme, {} as KeybindingsManager, () => { handle.hide(); resolve(); });
-        const handle = tui.showOverlay(component);
-      }),
-      notify() {},
-    },
-  } as unknown as ExtensionContext;
+  const children = [child("one"), child("two")];
+  const widget = new StatusWidget(() => children);
+  const ctx = { mode: "tui", ui: {
+    setWidget: (_key: string, factory: (tui: TUI, theme: Theme) => Component) => { tui.addChild(factory(tui, { fg: (_c: string, text: string) => text, bold: identity } as unknown as Theme)); },
+    onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => tui.addInputListener(handler),
+    getEditorText: () => editor.getText(),
+  } } as unknown as ExtensionContext;
+  t.after(() => widget.dispose());
   widget.install(ctx);
-  let navigation = widget.navigate(ctx);
+
+  input("\x1b[B");
+  assert(widget.focused && widget.expanded);
+  assert.equal(widget.selectedId, "one");
   input("\x1b[B");
   assert.equal(widget.selectedId, "two");
-  input("\x1b");
-  await navigation;
-  assert.deepEqual(editor.getCursor(), cursor);
-  input("X");
-  assert.equal(editor.getText(), "alpha Xbeta");
+  input("\r");
+  assert.equal(widget.detailId, "two");
+  input("\x1b[A");
+  assert.equal(widget.selectedId, "one");
+  assert.equal(widget.detailId, undefined);
+  input("\x1b[A");
+  assert.equal(widget.focused, false);
+  assert.equal(widget.expanded, true, "leaving the first row keeps the list open");
 
-  const paste = "\n".repeat(40) + "pasted text";
-  input(`\x1b[200~${paste}\x1b[201~`);
-  const pastedText = editor.getExpandedText();
-  const pastedCursor = editor.getCursor();
-  navigation = widget.navigate(ctx);
-  const dialog = new Editor(tui, { borderColor: identity, selectList: { selectedPrefix: identity, selectedText: identity,
-    description: identity, scrollInfo: identity, noMatch: identity } });
+  input("\x1b[B");
+  input("\x1b");
+  assert(!widget.focused && !widget.expanded);
+
+  input("\x1b[B");
+  input("x");
+  assert.equal(widget.focused, false);
+  assert.equal(editor.getText(), "x", "an unrelated key reaches the editor");
+
+  editor.setText("draft");
+  input("\x1b[B");
+  assert.equal(widget.focused, false, "down is not stolen from a non-empty draft");
+
+  editor.setText("");
+  const dialog = new Editor(tui, theme);
+  dialog.setText("prefill");
   tui.addChild(dialog);
   tui.setFocus(dialog);
-  widget.close();
-  await navigation;
-  input("dialog-value");
-  assert.equal(dialog.getText(), "dialog-value");
-  assert.equal(editor.getExpandedText(), pastedText);
-  assert.deepEqual(editor.getCursor(), pastedCursor);
+  input("\x1b[B");
+  assert.equal(widget.focused, false, "a focused dialog keeps its keys");
   tui.setFocus(editor);
-  navigation = widget.navigate(ctx);
+
+  widget.suspend(true);
+  input("\x1b[B");
+  assert.equal(widget.focused, false, "suspended while a relayed dialog is open");
+  widget.suspend(false);
+  input("\x1b[B");
+  assert.equal(widget.focused, true);
   widget.dispose();
   widget.dispose();
-  await navigation;
-  assert.equal(tui.hasOverlay(), false);
 });

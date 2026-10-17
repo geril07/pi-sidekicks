@@ -35,7 +35,12 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
 - Arrow-key navigation can enter and move through child rows, comparable to the
   current nicobailon compact status UI. Preserve normal editor input outside that mode.
 - Show useful identity/progress: role or name, model, state, and bounded current activity.
-  Exact labels, placement, and key bindings are not settled.
+  Exact labels and placement are not settled.
+- UX correction (2026-10-18): the first widget was rejected. Follow the nicobailon
+  pattern: Down from the editor enters the list; no shortcut hints in the status
+  line; `Ctrl+Alt+N` did not work for the operator and was removed. Results and
+  questions need real transcript rendering (tool call, message blocks), not raw JSON.
+  Agent-facing names, descriptions, and tool API are open to redesign.
 
 ## Explicitly deferred or simplified by the latest request
 

@@ -8,7 +8,7 @@ import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { id: string; state: RunState; question?: Question; result?: string; delivered: boolean }
+export interface Run { id: string; state: RunState; question?: Question; result?: string; delivered: boolean; startedAt?: number; endedAt?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
@@ -37,8 +37,22 @@ export interface ManagerOptions {
 
 const active = (state: RunState) => state === "starting" || state === "running" || state === "waiting";
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
+const CHILD_BRIEFING = [
+  "You are a sidekick: a child agent working for a parent agent. Messages that start with \"Sidekicks task:\" are your assignment; \"guidance\", \"follow-up\" and \"answer\" messages also come from the parent.",
+  "Your final message is returned to the parent as your result, and the parent sees nothing else you did. Make it self-contained: what you did or found, evidence (paths, line numbers, commands), and what is still open.",
+  "If you are blocked on something only the parent can decide, call ask_parent (wait:true pauses until answered, wait:false asks while you continue). Do not ask to reconfirm an adequate task. Do not delegate to other agents.",
+].join("\n");
 export const frame = (kind: string, text: string) => `Sidekicks ${kind}:\n${text}`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const argKeys = ["path", "file_path", "command", "pattern", "query", "url", "agent", "action"];
+const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
+
+/** Bounded, human-readable label for the tool a child is running. */
+export function describeTool(name: string, args: unknown): string {
+  const record = args && typeof args === "object" ? args as Record<string, unknown> : {};
+  const key = argKeys.find((candidate) => typeof record[candidate] === "string" && record[candidate]);
+  return oneLine(key ? `${name} ${record[key] as string}` : name).slice(0, 160);
+}
 
 export class Manager {
   private options: ManagerOptions;
@@ -53,7 +67,7 @@ export class Manager {
       if (saved.sessionPath !== join(options.directory, `${saved.id}.jsonl`)) continue;
       const record = structuredClone(saved);
       if (active(record.run.state)) {
-        record.run = { ...record.run, state: "interrupted", question: undefined,
+        record.run = { ...record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
           result: "Parent session detached. Continue explicitly; previous external effects may be unknown.", delivered: true };
       }
       record.questions = [];
@@ -75,11 +89,22 @@ export class Manager {
   }
 
   private assertAlive(): void { if (!this.alive) throw new Error("Parent session is no longer active"); }
-  private find(id: string): Child {
+  private find(ref: string): Child {
     this.assertAlive();
-    const child = this.children.get(id);
-    if (!child) throw new Error(`Unknown child: ${id}`);
+    const child = this.children.get(ref) ?? [...this.children.values()].find((candidate) => candidate.record.name === ref);
+    if (!child) throw new Error(`Unknown child: ${ref}. Known: ${[...this.children.values()].map((known) => known.record.name).join(", ") || "none"}`);
     return child;
+  }
+  private uniqueName(wanted: string | undefined, agent: string): string {
+    const taken = new Set([...this.children.values()].map((child) => child.record.name));
+    if (wanted !== undefined) {
+      if (taken.has(wanted)) throw new Error(`Name already used by another child: ${wanted}`);
+      return wanted;
+    }
+    for (let n = 1; ; n++) {
+      const candidate = n === 1 ? agent : `${agent}-${n}`;
+      if (!taken.has(candidate)) return candidate;
+    }
   }
   private capacity(): void {
     this.assertAlive();
@@ -96,10 +121,11 @@ export class Manager {
   async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking }, signal?: AbortSignal): Promise<ChildSnapshot> {
     this.capacity();
     const id = randomUUID();
-    const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name: input.name ?? input.agent,
+    const name = this.uniqueName(input.name, input.agent);
+    const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: this.options.cwd,
       sessionPath: join(this.options.directory, `${id}.jsonl`), model: input.model, thinking: input.thinking,
-      run: { id: randomUUID(), state: "starting", delivered: false } });
+      run: { id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() } });
     this.children.set(id, child);
     this.commit(child);
     await this.start(child, frame("task", input.task), signal);
@@ -119,7 +145,7 @@ export class Manager {
       } finally { child.operation = false; }
     } else {
       this.capacity();
-      child.record.run = { id: randomUUID(), state: "starting", delivered: false };
+      child.record.run = { id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() };
       child.lastError = undefined;
       this.commit(child);
       await this.start(child, frame("follow-up", message), signal);
@@ -201,7 +227,7 @@ export class Manager {
     try { writeFileSync(fd, lockContents); }
     finally { closeSync(fd); }
     const promptPath = join(this.options.directory, `${record.id}.agent.md`);
-    writeFileSync(promptPath, `${record.instructions}\n\nUse ask_parent directly for questions: wait:true pauses when blocked; wait:false asks while you continue. Do not delegate to other agents.`, { mode: 0o600 });
+    writeFileSync(promptPath, `${record.instructions.trim()}\n\n${CHILD_BRIEFING}`.trim(), { mode: 0o600 });
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
       "--append-system-prompt", promptPath, "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];
     if (!this.options.trusted) args.push("--no-approve");
@@ -280,7 +306,7 @@ export class Manager {
         ? event.message.errorMessage ?? `Assistant ${event.message.stopReason}` : undefined;
       child.lastAborted = event.message.stopReason === "aborted";
     } else if (event.type === "tool_execution_start") {
-      child.activity = `using ${event.toolName}`.slice(0, 160);
+      child.activity = describeTool(event.toolName, event.args);
       this.commit(child, false);
     } else if (event.type === "tool_execution_end") {
       child.activity = "working";
@@ -376,7 +402,7 @@ export class Manager {
       child.controller.abort();
       child.record.questions = [];
       if (active(child.record.run.state)) {
-        child.record.run = { ...child.record.run, state: "interrupted", question: undefined,
+        child.record.run = { ...child.record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
           result: "Parent session detached. Continue explicitly; no automatic replay.", delivered: true };
       }
       if (persist) this.options.persist(structuredClone(child.record));

@@ -33,6 +33,9 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
+Children are addressed by `name` (unique; defaults to the agent name, then `name-2`, ...).
+Tool results and delivered messages are short plain text, not JSON.
+
 Questions and final results arrive automatically. Progress updates do not wake the
 parent model. Up to 64 assignments can be active, including startup and blocking questions;
 completed children can remain idle for follow-up. Model/thinking stay fixed after
@@ -51,18 +54,20 @@ An idle child retains unanswered nonblocking questions across ordinary follow-up
 
 ### Human status
 
-The widget is hidden when the session has no children. Once children exist, it
-remains available for progress, pending questions, results, and follow-up.
+The widget below the editor is hidden when the session has no children. Once
+children exist, it shows a one-line summary (running, waiting, failed, done, stopped)
+and remains available for progress, pending questions, results, and follow-up.
 
-- `Ctrl+Alt+S`: collapse/expand the widget above the editor.
-- `Ctrl+Alt+N` or `/sidekicks`: enter arrow navigation.
-- Up/Down selects; Left/Right collapses/expands; Enter shows bounded details.
-- Escape closes navigation and restores editor focus without replacing the draft.
-- Clicking the summary toggles it in Pi fullscreen mode. Use keyboard controls in
-  regular mode; no terminal setting is changed automatically.
+- Down on an empty editor enters the list; any other key goes to the editor as usual.
+- Up/Down (or j/k) selects, Enter toggles details for the row (question, result
+  start, transcript path), Escape or Up on the first row leaves.
+- Clicking the summary expands/collapses it, and clicking a row toggles its details
+  (fullscreen mode only). `/sidekicks` enters the list without a keystroke.
+- Results and questions appear in the transcript as collapsible `[sidekick]` blocks;
+  tool calls render as `subagent <action> <target>`.
 
-These status actions do not spend a model turn. Use `/sidekicks` if another
-extension consumes these shortcuts.
+These actions do not spend a model turn. Down is only claimed when the main editor
+is focused and empty, so drafts, pastes, and dialogs keep their keys.
 
 ### Agent definitions
 

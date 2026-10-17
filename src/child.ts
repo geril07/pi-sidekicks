@@ -61,12 +61,12 @@ export default function childExtension(pi: ExtensionAPI): void {
     async execute(toolCallId, { question, wait = true }) {
       if (!wait) {
         if (!question.trim()) throw new Error("Question must not be blank");
-        const entry = { id: randomUUID(), text: question.trim(), wait: false };
+        const entry = { id: randomUUID().slice(0, 8), text: question.trim(), wait: false };
         pi.appendEntry(QUESTION_ENTRY, { action: "asked", ...entry });
         return { content: [{ type: "text", text: "Question sent. Continue working; the reply will enter this conversation." }], details: entry };
       }
       if (pending || reserved !== toolCallId || !question.trim()) throw new Error("No valid question reservation");
-      pending = { id: randomUUID(), text: question.trim() };
+      pending = { id: randomUUID().slice(0, 8), text: question.trim() };
       pi.appendEntry(QUESTION_ENTRY, { action: "asked", ...pending });
       return { content: [{ type: "text", text: "Waiting for the parent's answer." }], details: pending, terminate: true };
     },

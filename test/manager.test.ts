@@ -194,3 +194,17 @@ test("stop kills tool descendants in the child's process group", async (t) => {
     assert.equal(state, "Z", "descendant must be dead (or awaiting reaping)");
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 });
+
+test("children get unique handles and are addressable by name", async (t) => {
+  const h = await harness();
+  t.after(() => h.manager.shutdown());
+  const first = await h.manager.launch({ agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off" });
+  const second = await h.manager.launch({ agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off" });
+  const named = await h.manager.launch({ agent: "worker", instructions: "Work", name: "auditor", task: "Work", model: "local/scripted", thinking: "off" });
+  assert.deepEqual([first.name, second.name, named.name], ["worker", "worker-2", "auditor"]);
+  await assert.rejects(h.manager.launch({ agent: "worker", instructions: "Work", name: "auditor", task: "Work", model: "local/scripted", thinking: "off" }), /already used/);
+  const stopped = await h.manager.stop("worker-2");
+  assert.equal(stopped.id, second.id);
+  assert.equal(stopped.run.state, "cancelled");
+  await assert.rejects(h.manager.stop("nobody"), /Unknown child: nobody. Known: worker, worker-2, auditor/);
+});

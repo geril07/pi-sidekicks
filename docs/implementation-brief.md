@@ -140,13 +140,21 @@ If a batch also contains a blocking call, its barrier still defers sibling calls
 
 ## Human UI boundary
 
-`widget.ts` renders compact state above the editor only when the session has
-children, including settled conversations available for follow-up. It renders no
-rows for an empty session. Its summary toggles on click
-without taking focus; clicks require fullscreen. Keyboard equivalents work in both
-modes. A small capturing overlay owns arrows during explicit navigation; Escape
-closes it through Pi's public `done()` API. Editor text/cursor/paste are untouched.
-Selection tracks child IDs. Rendering bounds width, row count, and activity text.
+`widget.ts` renders compact state below the editor only when the session has
+children, including settled conversations available for follow-up. It follows the
+nicobailon fleet-status gesture: `ui.onTerminalInput` claims Down only when the
+focused component is the main editor (editor-shaped and its text equals
+`ctx.ui.getEditorText()`) and that text is empty; every other key blurs the list
+and passes through. Relayed child dialogs call `suspend()` so they own the keyboard.
+No overlay and no registered shortcuts. The summary line and rows toggle on click
+(fullscreen only). Selection tracks child IDs. Rendering bounds width, row count,
+detail lines, and activity text, and drops terminal control characters.
+
+`present.ts` holds state glyphs/tones, elapsed formatting, and the plain text the
+model reads (child lines, status, delivered question/result). `render.ts` holds the
+transcript views: `[sidekick]` message blocks (details carry the body, so views
+never parse model text), tool `renderCall`/`renderResult`. Pattern source:
+`.refs/nicobailon/pi-subagents/src/tui/subagent-messages.ts` and `fleet-status.ts`.
 
 Serialize child-extension dialogs through one promise chain. Relay select, confirm,
 and input to the parent's human UI with cancellation/deadlines. Relay multiline
@@ -163,7 +171,7 @@ are not hidden. The operator decides whether to disable the old package for a tr
 
 ```text
 src/
-  index.ts     Parent tool/command/shortcuts, lifecycle, delivery, dialog bridge
+  index.ts     Parent tool/command, lifecycle, delivery, dialog bridge
                → manager, agents, widget
   manager.ts   Child/run/question authority, concurrency, persistence, launch/stop
                → rpc
@@ -172,7 +180,9 @@ src/
   child.ts     Child-only ask_parent and execution-boundary hooks
                → public Pi extension API
   agents.ts    Trusted Markdown discovery, validation, project/user precedence
-  widget.ts    Bounded status rendering, navigation, cancellable editor overlay
+  widget.ts    Status widget with Down-arrow selection, cancellable editor overlay
+  present.ts   Shared state labels and model-facing text
+  render.ts    Transcript renderers for messages and tool calls
 test/
   *.test.ts    Observable RPC, lifecycle, agent definition, widget, and real-Pi integration tests
   fixtures/    Scripted local provider and fake RPC peer
@@ -208,7 +218,7 @@ Verified locally without a billable model or external MCP call:
   restored interruption, no replay on reload, and owned process-group cleanup.
 - Human confirm/select/input through a real RPC parent; all four dialog types through
   a real TUI parent, including explicit rejection rather than automatic approval.
-- Fullscreen and regular terminal navigation, mid-line draft/cursor preservation,
+- Fullscreen and regular terminal Down-arrow selection, draft preservation,
   unrelated dialogs, collapsed-paste submission, mouse toggles, and shutdown cleanup.
 
 Remaining release gate: permission for a real operator provider/MCP smoke, startup

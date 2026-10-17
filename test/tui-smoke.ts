@@ -44,7 +44,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     tmux("new-session", "-d", "-s", "qa", "-x", "200", "-y", "56", "-c", directory, command);
     tmux("set-option", "-t", "qa", "remain-on-exit", "on");
     const startup = await waitFor((text) => text.includes("(sidekicks-test) scripted"), "startup");
-    assert(!/Sidekicks [▸▾]/.test(startup), "widget must stay hidden before any children exist");
+    assert(!/[▸▾] sidekicks/.test(startup), "widget must stay hidden before any children exist");
     writeFileSync(join(directory, "startup.txt"), startup);
     literal("Delegate this task to a worker and answer its question.");
     keys("Enter");
@@ -73,22 +73,32 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
       return;
     }
     const baseline = records().length;
+    const summaryRow = (text: string) => {
+      const row = text.split("\n").findIndex((line) => /[▸▾] sidekicks/.test(line));
+      assert(row >= 0, "Missing sidekicks summary");
+      return row + 1;
+    };
+    await waitFor((text) => /▸ sidekicks .*1 done/.test(text), "collapsed summary after completion");
+    keys("Down");
+    await waitFor((text) => text.includes("esc back"), "down on an empty editor enters the list");
+    keys("Down", "Enter");
+    await waitFor((text) => text.includes(".jsonl"), "enter shows row details");
+    keys("Escape");
+    await waitFor((text) => !text.includes("esc back") && /▸ sidekicks/.test(text), "escape returns to the editor and collapses");
     literal("alpha beta");
     keys("Left", "Left", "Left", "Left");
     await waitFor((text) => text.includes("alpha beta"), "draft");
-    const cursor = tmux("display-message", "-p", "-t", "qa", "#{cursor_x}").trim();
-    shortcut("n");
-    await waitFor((text) => text.includes("Esc editor"), "navigation overlay");
-    keys("Down", "Right", "Escape");
-    await waitFor((text) => !text.includes("Esc editor"), "navigation close");
-    assert.equal(tmux("display-message", "-p", "-t", "qa", "#{cursor_x}").trim(), cursor);
+    keys("Down");
+    await delay(300);
+    assert(!screen().includes("esc back"), "down must not steal a non-empty draft");
+    keys("C-a", "C-k");
+    literal("alpha beta");
+    keys("Left", "Left", "Left", "Left");
     literal("X");
-    await waitFor((text) => text.includes("alpha Xbeta"), "mid-line cursor preservation");
-    keys("Left");
-    literal("Y");
-    await waitFor((text) => text.includes("alpha YXbeta"), "normal arrows outside navigation");
-    shortcut("n");
-    await waitFor((text) => text.includes("Esc editor"), "navigation reopened");
+    await waitFor((text) => text.includes("alpha Xbeta"), "mid-line insertion");
+    keys("C-a", "C-k");
+    keys("Down");
+    await waitFor((text) => text.includes("esc back"), "list reopened on an empty editor");
     shortcut("d");
     await waitFor((text) => text.includes("QA unrelated dialog"), "unrelated input dialog");
     literal("dialogvalue");
@@ -96,20 +106,15 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     literal("X");
     keys("Enter");
     await waitFor((text) => text.includes("QA dialog result: dialogXvalue"), "dialog owns text/arrows/Enter");
-    keys("Escape");
-    await waitFor((text) => !text.includes("Esc editor") && text.includes("alpha YXbeta"), "dialog/navigation cleanup");
+    await waitFor((text) => !text.includes("esc back"), "dialog releases list focus");
     if (mode === "fullscreen") {
-      const rowOf = (text: string, summary: string) => {
-        const row = text.split("\n").findIndex((line) => line.includes(summary));
-        assert(row >= 0, `Missing summary: ${summary}`);
-        return row + 1;
-      };
-      let row = rowOf(screen(), "Sidekicks ▾");
-      literal(`\x1b[<0;2;${row}M\x1b[<0;2;${row}m`);
-      const collapsed = await waitFor((text) => text.includes("Sidekicks ▸"), "summary click collapse");
-      row = rowOf(collapsed, "Sidekicks ▸");
-      literal(`\x1b[<0;2;${row}M\x1b[<0;2;${row}m`);
-      await waitFor((text) => text.includes("Sidekicks ▾"), "summary click expand");
+      const click = (text: string) => { const row = summaryRow(text); literal(`\x1b[<0;2;${row}M\x1b[<0;2;${row}m`); };
+      const current = screen();
+      const expanded = current.includes("▾ sidekicks");
+      click(current);
+      await waitFor((text) => text.includes(expanded ? "▸ sidekicks" : "▾ sidekicks"), "summary click toggles");
+      click(screen());
+      await waitFor((text) => text.includes(expanded ? "▾ sidekicks" : "▸ sidekicks"), "summary click toggles back");
     }
     assert.equal(records().length, baseline, "status observation must not call the model");
     writeFileSync(join(directory, "navigation.txt"), screen());
@@ -117,18 +122,16 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     const pasted = Array.from({ length: 40 }, (_, i) => `paste-line-${String(i).padStart(2, "0")}`).join("\n");
     literal(`\x1b[200~${pasted}\x1b[201~`);
     await waitFor((text) => text.includes("[paste #"), "collapsed paste");
-    shortcut("n");
-    await waitFor((text) => text.includes("Esc editor"), "navigation with paste");
-    keys("Escape");
-    await waitFor((text) => !text.includes("Esc editor") && text.includes("[paste #"), "paste preserved");
+    keys("Down");
+    await delay(300);
+    assert(!screen().includes("esc back"), "down must not enter the list over a pasted draft");
+    assert(screen().includes("[paste #"), "paste preserved");
     keys("Enter");
     await waitFor(() => records().length > baseline, "submit expanded paste");
     const content = JSON.stringify(records().at(-1)!.lastUser);
     assert(content.includes("paste-line-00") && content.includes("paste-line-39") && !content.includes("[paste #"));
-    shortcut("n");
-    await waitFor((text) => text.includes("Esc editor"), "navigation before shutdown");
     shortcut("q");
-    await waitFor(paneDead, "shutdown closes navigation");
+    await waitFor(paneDead, "shutdown");
     noLocks();
     console.log(`PASS ${mode}: ${directory}`);
   } catch (error) {
