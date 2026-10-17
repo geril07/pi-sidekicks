@@ -10,6 +10,17 @@ export default function childExtension(pi: ExtensionAPI): void {
   let pending: { id: string; text: string } | undefined;
   let batchTerminates = true;
 
+  pi.registerCommand("sidekicks-answer", {
+    description: "Internal correlated answer delivery without starting a turn",
+    handler: async (args) => {
+      const { id, text } = JSON.parse(args) as { id: string; text: string };
+      if (typeof id !== "string" || typeof text !== "string") throw new Error("Invalid answer");
+      pi.sendMessage({ customType: "sidekicks:answer", content: `Sidekicks answer to ${id}:\n${text}`,
+        display: true, details: { questionId: id } }, { triggerTurn: false, deliverAs: "steer" });
+      pi.appendEntry(QUESTION_ENTRY, { action: "answered", id });
+    },
+  });
+
   pi.on("before_agent_start", (event) => {
     if (pending) {
       const answered = event.messageType === "user" && event.prompt.startsWith(`Sidekicks answer to ${pending.id}:\n`);
@@ -23,7 +34,8 @@ export default function childExtension(pi: ExtensionAPI): void {
     reserved = undefined;
     batchTerminates = true;
     if (ctx.hasPendingMessages()) return;
-    const question = event.message.content.find((block) => block.type === "toolCall" && block.name === "ask_parent");
+    const question = event.message.content.find((block) => block.type === "toolCall" && block.name === "ask_parent"
+      && block.arguments.wait !== false);
     if (question?.type === "toolCall" && typeof question.arguments.question === "string" && question.arguments.question.trim()) {
       reserved = question.id;
     }
@@ -37,16 +49,22 @@ export default function childExtension(pi: ExtensionAPI): void {
     if (reserved && event.toolCallId !== reserved) {
       return { block: true, terminate: true, reason: "Question barrier: sibling work is deferred until the parent answers." };
     }
-    if (event.toolName === "ask_parent" && (event.parentToolCallId || event.toolCallId !== reserved)) {
+    if (event.toolName === "ask_parent" && (event.parentToolCallId || (event.input.wait !== false && event.toolCallId !== reserved))) {
       return { block: true, reason: "Call ask_parent directly, alone, after reading any queued parent guidance." };
     }
   });
 
   pi.registerTool({
     name: "ask_parent", label: "Ask parent", exposure: "model-only",
-    description: "Ask the parent when genuinely blocked. Call directly, alone. Work pauses until the parent answers in this conversation.",
-    parameters: Type.Object({ question: Type.String({ minLength: 1, maxLength: 8000 }) }),
-    async execute(toolCallId, { question }) {
+    description: "Ask the parent a question. wait defaults to true: call directly, alone, and pause until answered. Set wait:false to ask and continue; replies enter this conversation without restarting idle work.",
+    parameters: Type.Object({ question: Type.String({ minLength: 1, maxLength: 8000 }), wait: Type.Optional(Type.Boolean()) }),
+    async execute(toolCallId, { question, wait = true }) {
+      if (!wait) {
+        if (!question.trim()) throw new Error("Question must not be blank");
+        const entry = { id: randomUUID(), text: question.trim(), wait: false };
+        pi.appendEntry(QUESTION_ENTRY, { action: "asked", ...entry });
+        return { content: [{ type: "text", text: "Question sent. Continue working; the reply will enter this conversation." }], details: entry };
+      }
       if (pending || reserved !== toolCallId || !question.trim()) throw new Error("No valid question reservation");
       pending = { id: randomUUID(), text: question.trim() };
       pi.appendEntry(QUESTION_ENTRY, { action: "asked", ...pending });

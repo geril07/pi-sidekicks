@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { RpcConnection, type RpcEvent } from "../src/rpc.ts";
 import { Manager, type ChildRecord, type ChildSnapshot } from "../src/manager.ts";
 
@@ -19,8 +20,104 @@ async function isolated(scenario: string) {
     SIDEKICKS_TEST_LOG: log, SIDEKICKS_TEST_SCENARIO: scenario } };
 }
 
-test("real parent extension launches, receives a question, answers, and gets completion without polling", { timeout: 30_000 }, async (t) => {
-  const h = await isolated("orchestrator");
+for (const stopEarly of [false, true]) {
+test(`nonblocking questions notify during work, accept correlated active/idle replies, and cancel on stop (early: ${stopEarly})`, { timeout: 30_000 }, async (t) => {
+  const h = await isolated("nonblocking");
+  const gate = join(h.dir, "release-effect");
+  const deliveries: { child: ChildSnapshot; kind: string; questionId?: string }[] = [];
+  const manager = new Manager({ ownerSessionId: "real-parent", directory: join(h.dir, "children"), cwd: h.dir, trusted: false,
+    invocation: { command: process.execPath, args: [cli] },
+    env: { ...h.env, SIDEKICKS_TEST_GATE: gate, SIDEKICKS_TEST_BATCH: '["ask_parent","effect","ask_parent","ask_parent"]' },
+    persist() {}, changed() {}, dialog: async () => undefined,
+    deliver: (child, kind, question) => { deliveries.push({ child, kind, questionId: question?.id }); },
+  });
+  t.after(() => manager.shutdown());
+  const waitFor = async (predicate: () => boolean) => {
+    const deadline = performance.now() + 5000;
+    while (!predicate()) {
+      assert(performance.now() < deadline, "State transition timed out");
+      await delay(10);
+    }
+  };
+  const calls = async () => (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const child = await manager.launch({ role: "worker", instructions: "Work", task: "Ask and continue", model: "sidekicks-test/scripted", thinking: "low" });
+  await waitFor(() => deliveries.length === 3);
+  assert(deliveries.every((d) => d.kind === "question" && d.child.run.state === "running"));
+  const questions = manager.snapshot()[0].questions!;
+  assert.equal(questions.length, 3);
+  assert.equal(new Set(questions.map((q) => q.id)).size, 3);
+  assert(questions.every((q) => q.runId === child.run.id));
+  assert.equal((await calls()).filter((r) => r.call).length, 1);
+  if (stopEarly) {
+    await manager.stop(child.id);
+    const stopped = manager.snapshot()[0];
+    assert.equal(stopped.run.state, "cancelled");
+    assert.equal(stopped.connected, false);
+    assert.equal(stopped.questions!.length, 0);
+    assert.equal(deliveries.filter((d) => d.kind === "result").length, 1);
+    await assert.rejects(manager.answer(child.id, questions[0].id, "after stop"), /stale/);
+    assert.equal((await calls()).filter((r) => r.call).length, 1);
+    return;
+  }
+  await manager.answer(child.id, questions[0].id, "/active answer: A");
+  await assert.rejects(manager.answer(child.id, questions[0].id, "duplicate"), /stale/);
+  await manager.send(child.id, "Ordinary guidance is allowed while questions are outstanding");
+  assert.equal(manager.snapshot()[0].run.state, "running");
+  await writeFile(gate, "release");
+  await waitFor(() => deliveries.some((d) => d.kind === "result"));
+  const result = manager.snapshot()[0].run;
+  assert.equal(result.state, "completed");
+  assert.equal(result.id, child.run.id);
+  const afterActive = await calls();
+  assert.match(afterActive.at(-1).transcript, /active answer: A/);
+  assert.match(afterActive.at(-1).transcript, new RegExp(questions[0].id));
+  await manager.answer(child.id, questions[1].id, "late answer: B");
+  assert.deepEqual(manager.snapshot()[0].run, result, "late replies must not reopen or change the completed assignment");
+  assert.equal((await calls()).filter((r) => r.call).length, afterActive.filter((r) => r.call).length);
+  assert.match(await readFile(child.sessionPath, "utf8"), /late answer: B/);
+  await manager.send(child.id, "Use the retained late answer");
+  await waitFor(() => deliveries.filter((d) => d.kind === "result").length === 2);
+  assert.match((await calls()).at(-1).transcript, /late answer: B/);
+  assert.notEqual(manager.snapshot()[0].run.id, result.id);
+  await manager.stop(child.id);
+  assert.equal(manager.snapshot()[0].questions!.length, 0);
+  await assert.rejects(manager.answer(child.id, questions[2].id, "after stop"), /stale/);
+});
+}
+
+test("a nonblocking reply does not resume or cancel a later blocking question", { timeout: 30_000 }, async (t) => {
+  const h = await isolated("mixed-questions");
+  const notifications: string[] = [];
+  const manager = new Manager({ ownerSessionId: "real-parent", directory: join(h.dir, "children"), cwd: h.dir, trusted: false,
+    invocation: { command: process.execPath, args: [cli] }, env: h.env,
+    persist() {}, changed() {}, dialog: async () => undefined,
+    deliver: (_child, kind) => { notifications.push(kind); },
+  });
+  t.after(() => manager.shutdown());
+  const waitFor = async (predicate: () => boolean) => {
+    const deadline = performance.now() + 5000;
+    while (!predicate()) { assert(performance.now() < deadline, "State transition timed out"); await delay(10); }
+  };
+  const child = await manager.launch({ role: "worker", instructions: "Work", task: "Ask twice", model: "sidekicks-test/scripted", thinking: "low" });
+  await waitFor(() => notifications.length === 2);
+  const waiting = manager.snapshot()[0];
+  assert.equal(waiting.run.state, "waiting");
+  await manager.answer(child.id, waiting.questions![0].id, "Nonblocking answer");
+  assert.deepEqual(manager.snapshot()[0].run, waiting.run);
+  const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(calls.filter((r) => r.call).length, 2);
+  await manager.answer(child.id, waiting.run.question!.id, "Blocking answer");
+  await waitFor(() => notifications.includes("result"));
+  assert.equal(manager.snapshot()[0].run.state, "completed");
+  const transcript = await readFile(child.sessionPath, "utf8");
+  assert.match(transcript, /Nonblocking answer/);
+  assert.match(transcript, /Blocking answer/);
+  assert.doesNotMatch(transcript, /"action":"cancelled"/);
+});
+
+for (const scenario of ["orchestrator", "nonblocking-parent"]) {
+test(`real parent extension launches, receives a question, answers, and gets completion without polling: ${scenario}`, { timeout: 30_000 }, async (t) => {
+  const h = await isolated(scenario);
   const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
     "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
     { cwd: h.dir, env: h.env });
@@ -58,7 +155,7 @@ test("real parent extension launches, receives a question, answers, and gets com
   assert.match(transcript, /"action":"answered"/);
   const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(calls.filter((record) => record.child === child.id && record.call).length, 2);
-  assert.equal(calls.filter((record) => record.effect).length, 0);
+  assert.equal(calls.filter((record) => record.effect).length, scenario === "nonblocking-parent" ? 2 : 0);
   await rpc.request({ type: "prompt", message: "/qa-reload" });
   assert.equal((await rpc.request({ type: "get_state" })).isStreaming, false);
   const afterReload = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
@@ -66,6 +163,7 @@ test("real parent extension launches, receives a question, answers, and gets com
     "reload must not replay assignments or notifications");
   await rpc.request({ type: "new_session" });
 });
+}
 
 test("real child reopens its persisted conversation, loading ambient extensions again", { timeout: 30_000 }, async (t) => {
   const h = await isolated("reopen");

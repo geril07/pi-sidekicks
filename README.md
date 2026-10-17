@@ -22,20 +22,31 @@ The old subagent extension is not hidden or disabled automatically.
 
 ## Use
 
-Ask Pi to delegate explicitly. The parent gets one `sidekick` tool:
+The parent gets one `sidekick` tool; delegation follows the parent's instructions:
 
 | Action | Required fields | Behavior |
 |---|---|---|
 | `launch` | `role`, `task` | Returns after child readiness, not task completion. Optional `name`, `model`, `thinking`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
-| `answer` | `child`, `questionId`, `answer` | Answers the exact settled question in the same assignment. |
+| `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available roles. |
 
 Questions and final results arrive automatically. Progress updates do not wake the
-parent model. Up to three assignments can be active, including waiting questions;
+parent model. Up to 64 assignments can be active, including startup and blocking questions;
 completed children can remain idle for follow-up. Model/thinking stay fixed after
 launch, and unavailable selections fail rather than silently fall back.
+
+Children use `ask_parent({ question, wait })`. Omitted `wait` defaults to `true`
+(an implementation default, not a user requirement): the child pauses and the
+parent is notified after settlement. `wait: false` notifies immediately and lets
+work continue, including sibling tools and multiple outstanding questions.
+Replies are correlated by question ID and enter that same conversation at a safe
+boundary. A late nonblocking answer is retained without reopening the completed
+assignment or spending a model turn; use `send` explicitly if more work is needed.
+Nonblocking questions do not prevent ordinary guidance or follow-up. Stop, failure,
+process loss, and parent detach cancel unanswered questions; stale/duplicate replies fail.
+An idle child retains unanswered nonblocking questions across ordinary follow-ups.
 
 ### Human status
 
@@ -59,7 +70,7 @@ project is trusted. Project names override user names. A role is:
 name: worker
 description: Implement a clearly scoped task
 ---
-Complete the assigned task. Ask the parent only when genuinely blocked.
+Complete the assigned task. Ask the parent when needed; wait only when blocked.
 ```
 
 Optional frontmatter: `model` (exact `provider/model-id`, or an unambiguous model
@@ -74,8 +85,14 @@ model/thinking inherit the parent; move pins manually if wanted. No roles are re
 
 ## Lifecycle and limits
 
+These are current implementation policies, not permanent product requirements.
+See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
+
 - Each child has its own saved Pi conversation under Pi's user-data directory.
   Small registry records are stored in the owning parent's session, not a database.
+- The fixed ceiling is 64 active assignments; excess work is rejected, not queued.
+  Idle processes remain alive and do not consume assignment slots. Each child is a
+  full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
 - Quit, reload, new/resume/fork, and tree navigation detach the old runtime and stop
   owned children. Returning to the owning session permits explicit follow-up; an
   interrupted assignment is never replayed automatically.
@@ -105,7 +122,7 @@ model/thinking inherit the parent; move pins manually if wanted. No roles are re
 ```sh
 npm run check
 npm test
-python test/tui-smoke.py  # optional: requires tmux
+npm run test:tui  # optional: requires tmux
 ```
 
 Tests use isolated agent directories under `/tmp/opencode`, real Pi RPC processes,

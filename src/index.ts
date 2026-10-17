@@ -9,7 +9,7 @@ import { StatusWidget, cancellableEditor } from "./widget.ts";
 import type { Invocation } from "./rpc.ts";
 
 const STATE_ENTRY = "sidekicks:state";
-const DESCRIPTION = "Launch up to three asynchronous role-based Pi children, send guidance/follow-up, answer a specific child question, stop work, or inspect status. Launch waits only for readiness, not completion. Questions/results arrive automatically; do not poll. Children retain their conversation. Model/thinking overrides apply at launch only. Never delegate unless the user requests it.";
+const DESCRIPTION = "Launch up to 64 asynchronous role-based Pi assignments, send guidance/follow-up, answer a specific child question, stop work, or inspect status. Launch waits only for readiness, not completion. Questions/results arrive automatically; do not poll. Children retain their conversation. Blocking answers resume work; nonblocking answers enter the conversation without restarting idle work. Model/thinking overrides apply at launch only.";
 
 function invocation(): Invocation {
   const entry = process.argv[1];
@@ -80,10 +80,11 @@ export default function sidekicks(pi: ExtensionAPI): void {
         if (ctx.sessionManager.getSessionId() === ownerSessionId) pi.appendEntry(STATE_ENTRY, record);
       },
       changed: () => runtime.widget?.refresh(),
-      deliver: (child, kind) => {
+      deliver: (child, kind, question) => {
         if (current !== runtime) return;
-        const details = { childId: child.id, runId: child.run.id, questionId: child.run.question?.id, outcome: child.run.state };
-        const content = `Sidekick ${kind} from ${child.name}\n${JSON.stringify(details)}\n${kind === "question" ? child.run.question!.text : child.run.result}\nChild transcript: ${child.sessionPath}`;
+        const details = { childId: child.id, runId: question?.runId ?? child.run.id, questionId: question?.id, outcome: child.run.state,
+          wait: kind === "question" ? child.run.question?.id === question?.id : undefined };
+        const content = `Sidekick ${kind} from ${child.name}\n${JSON.stringify(details)}\n${kind === "question" ? question!.text : child.run.result}\nChild transcript: ${child.sessionPath}`;
         pi.sendMessage({ customType: `sidekicks:${kind}`, content, display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
       },
     });

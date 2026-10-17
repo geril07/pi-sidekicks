@@ -9,6 +9,8 @@ const cli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cl
 
 const cases = [
   { scenario: "pause", batch: ["effect", "ask_parent", "effect"], paused: true, effects: 0 },
+  { scenario: "explicit-wait", batch: ["effect", "ask_parent", "effect"], paused: true, effects: 0 },
+  { scenario: "nonblocking", batch: ["ask_parent", "effect", "ask_parent"], paused: false, effects: 1 },
   { scenario: "pause", batch: ["ask_parent", "effect", "effect"], paused: true, effects: 0 },
   { scenario: "pause", batch: ["effect", "effect", "ask_parent"], paused: true, effects: 0 },
   { scenario: "pause", batch: ["ask_parent", "ask_parent", "effect"], paused: true, effects: 0 },

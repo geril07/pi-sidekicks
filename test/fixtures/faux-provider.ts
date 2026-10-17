@@ -1,4 +1,5 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -36,7 +37,13 @@ export default function fixture(pi: ExtensionAPI): void {
   });
   pi.registerTool({ name: "effect", label: "Effect", parameters: Type.Object({}), executionMode: process.env.SIDEKICKS_TEST_SEQUENTIAL ? "sequential" : "parallel",
     description: "Test-only side effect",
-    async execute() { log({ effect: true }); return { content: [{ type: "text", text: "effect" }], details: undefined }; },
+    async execute(_id, _args, signal) {
+      log({ effect: true });
+      if (scenario === "nonblocking" && process.env.SIDEKICKS_TEST_GATE) {
+        while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10, undefined, { signal });
+      }
+      return { content: [{ type: "text", text: "effect" }], details: undefined };
+    },
   });
   pi.registerTool({ name: "nested_question", label: "Nested question", parameters: Type.Object({}), description: "Test nested invocation",
     async execute(_id, _args, _signal, _update, ctx) {
@@ -57,8 +64,12 @@ export default function fixture(pi: ExtensionAPI): void {
   });
   const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
     log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent",
-      lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content });
-    if (["orchestrator", "dialogs"].includes(scenario) && !process.env.PI_SIDEKICKS_CHILD) {
+      lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
+      transcript: scenario === "nonblocking" ? JSON.stringify(context.messages) : undefined });
+    if (scenario === "mixed-questions" && state.callCount <= 2) {
+      return fauxAssistantMessage(fauxToolCall("ask_parent", { question: `Question ${state.callCount}?`, wait: state.callCount === 2 }), { stopReason: "toolUse" });
+    }
+    if (["orchestrator", "dialogs", "nonblocking-parent"].includes(scenario) && !process.env.PI_SIDEKICKS_CHILD) {
       if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("sidekick", {
         action: "launch", role: "worker", task: "Ask which option, then finish",
         ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH ?? '{"model":"sidekicks-test/scripted","thinking":"low"}'),
@@ -80,7 +91,8 @@ export default function fixture(pi: ExtensionAPI): void {
       if (scenario === "dialogs") return fauxAssistantMessage(fauxToolCall("human_dialogs", {}), { stopReason: "toolUse" });
       const names = JSON.parse(process.env.SIDEKICKS_TEST_BATCH ?? '["effect","ask_parent","effect"]') as string[];
       return fauxAssistantMessage(names.map((name, i) => fauxToolCall(name,
-        name === "ask_parent" ? { question: scenario === "malformed" ? "" : "Which option?" } : {}, { id: `call-${i}` })), { stopReason: "toolUse" });
+        name === "ask_parent" ? { question: scenario === "malformed" ? "" : "Which option?",
+          ...(["nonblocking", "nonblocking-parent"].includes(scenario) ? { wait: false } : scenario === "explicit-wait" ? { wait: true } : {}) } : {}, { id: `call-${i}` })), { stopReason: "toolUse" });
     }
     return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
   };

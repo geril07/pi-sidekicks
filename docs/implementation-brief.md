@@ -1,7 +1,8 @@
 # V1 implementation brief
 
 Updated 2026-10-18. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local scripted-provider and terminal verification passes. The operator's real
+Local TypeScript checking, 40 scripted-provider/unit tests, and all three optional
+terminal scenarios pass. The operator's real
 provider/MCP combination is not verified, and the extension is not enabled there.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
 
@@ -19,11 +20,13 @@ observational runtime. Child-local question reservations only protect execution.
 |---|---|
 | Child | Stable ID, role body, name, model/thinking, cwd, session path, owner parent session; process is replaceable. |
 | Assignment/run | Separate ID; `starting` → `running` ↔ `waiting` → `completed`, `failed`, `cancelled`, or `interrupted`. |
-| Question | Separate ID tied to the current run; pending until answered, withdrawn, or cancelled. |
+| Question | Separate ID tied to its originating run; pending until answered, withdrawn, or cancelled. One blocking barrier per run; multiple nonblocking questions per conversation. |
 
-Three assignments may be active, including startup and waiting questions. Reject
+Up to 64 assignments may be active, including startup and blocking questions. Reject
 excess work rather than queue launches. Completed children remain idle; idle
 processes do not consume assignment slots. No automatic eviction policy is added.
+This is a fixed implementation ceiling following the user's correction, not a
+claim that 64 full Pi processes have been validated. Typical usage is not a limit.
 
 ### Startup and continuation
 
@@ -40,8 +43,12 @@ processes do not consume assignment slots. No automatic eviction policy is added
 5. Submit a framed task and return after acceptance, not completion. Startup errors
    return directly; uncertainty after submission is interruption, not proof of failure.
 
-`send` steers running work or starts a new run in the same conversation. An answer
-continues the waiting run. A stopped/detached child reopens its saved session and
+`send` steers running work or starts a new run in the same conversation. A blocking
+answer continues the waiting run. Nonblocking answers use the child-only internal
+`/sidekicks-answer` command and Pi's public `sendMessage` with `triggerTurn: false`
+and `deliverAs: "steer"`: append at a safe boundary while running, or immediately
+while idle, without a new model turn. Framed answer text is message content, not
+an executable command. A stopped/detached child reopens its saved session and
 reapplies its saved role/model configuration. Model changes require a new child.
 Framing ensures task/guidance/answer text cannot become a leading slash command.
 
@@ -54,7 +61,7 @@ Enforce command deadlines and a bounded line size; reject malformed protocol dat
 Classify only at `agent_settled`, never from prompt acceptance, `agent_end`, or exit:
 
 - Explicit stop wins over a pending question or result extraction.
-- A pending accepted question means waiting, not success or cancellation.
+- A pending accepted blocking question means waiting, not success or cancellation.
 - An assistant/provider error means failure; an unexplained abort means interruption.
 - Otherwise collect `get_last_assistant_text` and complete the assignment.
 - Exit before settlement means interruption, even with exit code zero.
@@ -63,6 +70,11 @@ Questions and outcomes are custom messages, delivered with `triggerTurn` and
 `deliverAs: "followUp"`. Check runtime ownership immediately before submission;
 deduplicate question events and terminal outcomes. Progress only updates the widget.
 Bound stored/delivered result text and point to the saved transcript for the rest.
+Nonblocking question notifications are immediate, without waiting for settlement;
+their IDs and originating run IDs remain in child metadata across completion and
+ordinary follow-ups. Replies do not reopen terminal runs. Explicit follow-up is
+needed to act on an idle reply. Failure, stop, process loss, and parent detach cancel
+unanswered questions. Duplicate/stale answers fail; completed outcomes stay unchanged.
 
 Parent custom entries contain child metadata and latest run outcomes. Child session
 files contain the conversation and question transitions. This is not a database or
@@ -87,7 +99,11 @@ descendants after parent SIGKILL are not guaranteed.
 
 Implemented and exercised against real Pi 1.3.0 with a local scripted provider:
 
-1. At finalized assistant `message_end`, reserve the first valid direct `ask_parent`
+`ask_parent({ question, wait })` defaults omitted `wait` to `true`. This preserves
+existing calls; it is an implementation default, not a user requirement. The
+following pause mechanism applies only to wait mode:
+
+1. At finalized assistant `message_end`, reserve the first valid direct blocking `ask_parent`
    only if no guidance/follow-up is pending. Block sibling calls with terminating
    error results. The tool is `model-only`, so nested/codemode invocation is unavailable.
 2. `ask_parent` persists a namespaced question entry and returns a normal result
@@ -108,6 +124,11 @@ turn after the ordinary tool-result continuation.
 These results cover the deterministic fixtures, not every installed extension's
 boundary hooks. Ambient extensions that transform tool results/continuation need
 the operator integration smoke before replacement.
+
+For `wait: false`, append the question entry and return a normal non-terminating
+tool result. Do not reserve a barrier, block sibling effects, or abort at settlement.
+Multiple nonblocking questions may remain outstanding; normal guidance is allowed.
+If a batch also contains a blocking call, its barrier still defers sibling calls.
 
 ## Human UI boundary
 
@@ -145,7 +166,7 @@ src/
 test/
   *.test.ts    Observable RPC, lifecycle, role, widget, and real-Pi integration tests
   fixtures/    Scripted local provider and fake RPC peer
-  tui-smoke.py Real terminal trial using a separate named tmux server
+  tui-smoke.ts Real terminal trial using a separate named tmux server
 docs/          Scope, this design, historical baseline/research
 references/    Pinned upstream source index
 .refs/         Ignored, unchanged reference clones
@@ -158,7 +179,7 @@ not a bundler. Runtime records and credentials stay outside this repository.
 
 ## Verification and remaining work
 
-Run `npm run check`, `npm test`, and optionally `python test/tui-smoke.py`.
+Run `npm run check`, `npm test`, and optionally `npm run test:tui` (requires tmux).
 
 Verified locally without a billable model or external MCP call:
 
@@ -167,7 +188,12 @@ Verified locally without a billable model or external MCP call:
 - Same-process continuation and reopening the same saved Pi conversation.
 - Question first/middle/last, multiple questions, sequential/parallel siblings,
   queued guidance/follow-up, malformed/nested calls, unknown tools, continuation hooks.
-- Three active assignments, startup/transport/model errors, stale/duplicate answers,
+- More than three live fake-RPC assignments; the 64-slot reservation boundary,
+  including waiting/startup and excluding idle work (not 64 full Pi processes).
+- Multiple nonblocking questions before settlement, active and idle replies, guidance
+  while pending, late answers retained across follow-up, cancellation during work
+  and after completion, and replies while a later blocking question remains paused.
+- Startup/transport/model errors, stale/duplicate answers,
   cancellation vs completion, process exit, readiness shutdown, writer exclusion,
   restored interruption, no replay on reload, and owned process-group cleanup.
 - Human confirm/select/input through a real RPC parent; all four dialog types through

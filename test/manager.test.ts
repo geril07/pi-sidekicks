@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { Manager, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
+import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
 
 async function harness(mode = "hold") {
   const directory = await mkdtemp("/tmp/opencode/sidekicks-manager-");
@@ -30,19 +30,38 @@ async function harness(mode = "hold") {
   return { manager, options, directory, records, deliveries, waitFor, launch };
 }
 
-test("launch is async, enforces three active assignments, and stop retains the session identity", async (t) => {
+test("launch allows more than three assignments, and stop retains the session identity", async (t) => {
   const h = await harness();
   t.after(() => h.manager.shutdown());
-  const children = await Promise.all([h.launch("one"), h.launch("two"), h.launch("three")]);
+  const children = await Promise.all([h.launch("one"), h.launch("two"), h.launch("three"), h.launch("four")]);
   assert(children.every((child) => child.run.state === "running"));
-  await assert.rejects(h.launch("four"), /Three assignments/);
   const stopped = await h.manager.stop(children[0].id);
   assert.equal(stopped.run.state, "cancelled");
   assert.equal(stopped.sessionPath, children[0].sessionPath);
   assert.equal(stopped.connected, false);
   assert.equal(h.deliveries.filter((d) => d.child.id === stopped.id && d.kind === "result").length, 1);
-  const next = await h.launch("four");
+  const next = await h.launch("five");
   assert.equal(next.run.state, "running");
+});
+
+test("64 reservations including a waiting assignment fill capacity; cancelled and idle assignments do not", async (t) => {
+  const h = await harness("question");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "waiting");
+  const reserveRemaining = () => Array.from({ length: MAX_ACTIVE_ASSIGNMENTS - 1 }, () => assert.rejects(h.manager.launch({
+    role: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
+  }, AbortSignal.abort()), /abort/i));
+  const reservations = reserveRemaining();
+  await assert.rejects(h.launch("overflow"), /64 assignments/);
+  await Promise.all(reservations);
+  await h.manager.answer(child.id, "question-1", "Choose A");
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  const next = reserveRemaining();
+  const extra = assert.rejects(h.manager.launch({ role: "worker", instructions: "Work", task: "Work",
+    model: "local/scripted", thinking: "off" }, AbortSignal.abort()), /abort/i);
+  await assert.rejects(h.launch("overflow"), /64 assignments/);
+  await Promise.all([...next, extra]);
 });
 
 test("question delivery is deduplicated; only a matching answer continues the same run", async (t) => {

@@ -12,27 +12,31 @@ export interface Run { id: string; state: RunState; question?: Question; result?
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; role: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
+  questions?: (Question & { runId: string })[];
 }
 export interface ChildSnapshot {
   id: string; name: string; role: string; model: string; thinking: Thinking;
   run: Run; connected: boolean; activity: string; sessionPath: string;
+  questions?: (Question & { runId: string })[];
 }
 interface Child {
   record: ChildRecord; rpc?: RpcConnection; release?: () => void; closing?: Promise<void>;
   stopRequested: boolean; operation: boolean; settling: boolean; activity: string;
   controller: AbortController; lastError?: string; lastAborted?: boolean;
+  seenQuestions: Set<string>;
 }
 export interface ManagerOptions {
   ownerSessionId: string; directory: string; cwd: string; trusted: boolean;
   invocation: Invocation; env?: NodeJS.ProcessEnv;
   persist: (record: ChildRecord) => void;
-  deliver: (child: ChildSnapshot, kind: "question" | "result") => void;
+  deliver: (child: ChildSnapshot, kind: "question" | "result", question?: Question & { runId?: string }) => void;
   changed: () => void;
   dialog: (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal) => Promise<RpcExtensionUIResponse | undefined>;
   restored?: ChildRecord[];
 }
 
 const active = (state: RunState) => state === "starting" || state === "running" || state === "waiting";
+export const MAX_ACTIVE_ASSIGNMENTS = 64;
 export const frame = (kind: string, text: string) => `Sidekicks ${kind}:\n${text}`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -52,13 +56,14 @@ export class Manager {
         record.run = { ...record.run, state: "interrupted", question: undefined,
           result: "Parent session detached. Continue explicitly; previous external effects may be unknown.", delivered: true };
       }
+      record.questions = [];
       this.children.set(record.id, this.child(record));
     }
   }
 
   private child(record: ChildRecord): Child {
     return { record, stopRequested: false, operation: false, settling: false,
-      activity: "detached", controller: new AbortController() };
+      activity: "detached", controller: new AbortController(), seenQuestions: new Set() };
   }
 
   snapshot(): ChildSnapshot[] { return [...this.children.values()].map((child) => this.view(child)); }
@@ -66,7 +71,7 @@ export class Manager {
   private view(child: Child): ChildSnapshot {
     const { id, name, role, model, thinking, run, sessionPath } = child.record;
     return { id, name, role, model, thinking, run: structuredClone(run), sessionPath,
-      connected: !!child.rpc && !child.closing, activity: child.activity };
+      connected: !!child.rpc && !child.closing, activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
   private assertAlive(): void { if (!this.alive) throw new Error("Parent session is no longer active"); }
@@ -78,8 +83,8 @@ export class Manager {
   }
   private capacity(): void {
     this.assertAlive();
-    if ([...this.children.values()].filter((child) => active(child.record.run.state)).length >= 3) {
-      throw new Error("Three assignments are already active, including waiting questions. Stop or finish one first.");
+    if ([...this.children.values()].filter((child) => active(child.record.run.state)).length >= MAX_ACTIVE_ASSIGNMENTS) {
+      throw new Error(`${MAX_ACTIVE_ASSIGNMENTS} assignments are already active, including waiting questions. Stop or finish one first.`);
     }
   }
   private commit(child: Child, persist = true): void {
@@ -125,6 +130,19 @@ export class Manager {
   async answer(id: string, questionId: string, answer: string, signal?: AbortSignal): Promise<ChildSnapshot> {
     const child = this.find(id);
     const run = child.record.run;
+    const question = child.record.questions?.find((q) => q.id === questionId);
+    if (question) {
+      if (child.operation || child.closing || !child.rpc || child.stopRequested) throw new Error("Child is changing state; retry after it settles.");
+      child.operation = true;
+      try {
+        signal?.throwIfAborted();
+        const accepted = await child.rpc.request({ type: "prompt", message: `/sidekicks-answer ${JSON.stringify({ id: questionId, text: answer })}` });
+        if (accepted.disposition !== "handled") throw new Error("Child did not handle the correlated answer command");
+        child.record.questions = child.record.questions?.filter((q) => q.id !== questionId);
+        this.commit(child);
+      } finally { child.operation = false; }
+      return this.view(child);
+    }
     if (child.operation || child.settling || run.state !== "waiting" || run.question?.id !== questionId) {
       throw new Error("No matching settled question: answer is stale, duplicate, or not ready.");
     }
@@ -183,7 +201,7 @@ export class Manager {
     try { writeFileSync(fd, lockContents); }
     finally { closeSync(fd); }
     const promptPath = join(this.options.directory, `${record.id}.role.md`);
-    writeFileSync(promptPath, `${record.instructions}\n\nUse ask_parent directly when genuinely blocked. Do not delegate to other agents.`, { mode: 0o600 });
+    writeFileSync(promptPath, `${record.instructions}\n\nUse ask_parent directly for questions: wait:true pauses when blocked; wait:false asks while you continue. Do not delegate to other agents.`, { mode: 0o600 });
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
       "--append-system-prompt", promptPath, "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];
     if (!this.options.trusted) args.push("--no-approve");
@@ -201,6 +219,8 @@ export class Manager {
     rpc.on("fault", (error: Error) => { child.lastError = error.message; });
     rpc.on("exit", () => {
       child.controller.abort();
+      record.questions = [];
+      this.commit(child);
       if (this.alive && active(record.run.state) && !child.operation) {
         this.finish(child, child.stopRequested ? "cancelled" : "interrupted", child.lastError ?? "Child process exited before completion.");
       }
@@ -233,10 +253,18 @@ export class Manager {
         if (this.alive && child.rpc === rpc && !child.controller.signal.aborted) rpc.respond({ type: "extension_ui_response", id: event.id, cancelled: true });
       });
     } else if (event.type === "entry_appended" && run.state !== "starting" && event.entry.type === "custom" && event.entry.customType === "sidekicks:question") {
-      const data = event.entry.data as { action?: string; id?: string; text?: string } | undefined;
+      const data = event.entry.data as { action?: string; id?: string; text?: string; wait?: boolean } | undefined;
       if (!active(run.state) || child.stopRequested) return;
       if (data?.action === "asked" && typeof data.id === "string" && typeof data.text === "string") {
-        if (run.question?.id === data.id) return;
+        if (child.seenQuestions.has(data.id)) return;
+        child.seenQuestions.add(data.id);
+        if (data.wait === false) {
+          const question = { id: data.id, text: data.text, runId: run.id, delivered: true };
+          (child.record.questions ??= []).push(question);
+          this.commit(child);
+          this.options.deliver(this.view(child), "question", question);
+          return;
+        }
         if (run.question) {
           this.finish(child, "interrupted", "Child emitted a second pending question.");
           void this.disconnect(child);
@@ -280,7 +308,7 @@ export class Manager {
       this.commit(child);
       if (!run.question.delivered && this.alive) {
         run.question.delivered = true;
-        this.options.deliver(this.view(child), "question");
+        this.options.deliver(this.view(child), "question", run.question);
         this.commit(child);
       }
       return;
@@ -301,6 +329,7 @@ export class Manager {
     if (!active(run.state)) return;
     run.state = state;
     run.question = undefined;
+    if (state !== "completed") child.record.questions = [];
     run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${child.record.sessionPath}]`;
     child.activity = state;
     this.commit(child);
@@ -314,6 +343,7 @@ export class Manager {
   async stop(id: string): Promise<ChildSnapshot> {
     const child = this.find(id);
     child.stopRequested = true;
+    child.record.questions = [];
     child.controller.abort();
     if (child.rpc && !child.closing) {
       try { await child.rpc.request({ type: "clear_queue" }, 1000); await child.rpc.request({ type: "abort" }, 2000); }
@@ -344,6 +374,7 @@ export class Manager {
     const children = [...this.children.values()];
     for (const child of children) {
       child.controller.abort();
+      child.record.questions = [];
       if (active(child.record.run.state)) {
         child.record.run = { ...child.record.run, state: "interrupted", question: undefined,
           result: "Parent session detached. Continue explicitly; no automatic replay.", delivered: true };
