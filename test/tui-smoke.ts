@@ -13,9 +13,9 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   const directory = mkdtempSync(`/tmp/opencode/sidekicks-tui-${mode}-`);
   const agent = join(directory, "agent");
   mkdirSync(join(agent, "extensions"), { recursive: true });
-  mkdirSync(join(agent, "agents"));
+  mkdirSync(join(agent, "sidekicks"));
   symlinkSync(join(root, "test/fixtures/faux-provider.ts"), join(agent, "extensions/faux-provider.ts"));
-  writeFileSync(join(agent, "agents/worker.md"), "---\nname: worker\ndescription: Test worker\n---\nWork on the task.\n");
+  writeFileSync(join(agent, "sidekicks/worker.md"), "---\nname: worker\ndescription: Test worker\n---\nWork on the task.\n");
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ tuiMode: mode, checkForUpdates: false }));
   const log = join(directory, "calls.jsonl");
   const socket = `sidekicks-${process.pid}-${mode}-${scenario}`;
@@ -43,7 +43,9 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   try {
     tmux("new-session", "-d", "-s", "qa", "-x", "200", "-y", "56", "-c", directory, command);
     tmux("set-option", "-t", "qa", "remain-on-exit", "on");
-    await waitFor((text) => text.includes("Sidekicks"), "startup");
+    const startup = await waitFor((text) => text.includes("(sidekicks-test) scripted"), "startup");
+    assert(!/Sidekicks [▸▾]/.test(startup), "widget must stay hidden before any children exist");
+    writeFileSync(join(directory, "startup.txt"), startup);
     literal("Delegate this task to a worker and answer its question.");
     keys("Enter");
     if (scenario === "dialogs") {

@@ -1,6 +1,6 @@
 # pi-sidekicks
 
-A personal Pi extension for a few asynchronous, role-based child agents.
+A personal Pi extension for asynchronous child agents with reusable definitions.
 
 **Status:** first implementation, tested locally with Pi 1.3.0 and scripted models.
 The operator's real provider/MCP configuration has not been smoke-tested. This
@@ -18,19 +18,20 @@ pi -e ./src/index.ts
 This loads the extension for that invocation, without changing Pi settings. For
 another working directory, pass the absolute path to `src/index.ts` instead.
 Do not load `src/child.ts` manually; the parent loads it only inside children.
-The old subagent extension is not hidden or disabled automatically.
+Disable pi-subagents for a trial: both extensions register a tool named `subagent`.
+The old extension is not hidden or disabled automatically.
 
 ## Use
 
-The parent gets one `sidekick` tool; delegation follows the parent's instructions:
+The parent gets one `subagent` tool; delegation follows the parent's instructions:
 
 | Action | Required fields | Behavior |
 |---|---|---|
-| `launch` | `role`, `task` | Returns after child readiness, not task completion. Optional `name`, `model`, `thinking`. |
+| `launch` | `agent`, `task` | Returns after child readiness, not task completion. Optional `name`, `model`, `thinking`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. |
-| `status` | none | Lists children, latest outcomes, pending questions, and available roles. |
+| `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
 Questions and final results arrive automatically. Progress updates do not wake the
 parent model. Up to 64 assignments can be active, including startup and blocking questions;
@@ -50,6 +51,9 @@ An idle child retains unanswered nonblocking questions across ordinary follow-up
 
 ### Human status
 
+The widget is hidden when the session has no children. Once children exist, it
+remains available for progress, pending questions, results, and follow-up.
+
 - `Ctrl+Alt+S`: collapse/expand the widget above the editor.
 - `Ctrl+Alt+N` or `/sidekicks`: enter arrow navigation.
 - Up/Down selects; Left/Right collapses/expands; Enter shows bounded details.
@@ -60,10 +64,10 @@ An idle child retains unanswered nonblocking questions across ordinary follow-up
 These status actions do not spend a model turn. Use `/sidekicks` if another
 extension consumes these shortcuts.
 
-### Roles
+### Agent definitions
 
-Read from `~/.pi/agent/agents/*.md`, and from `<cwd>/.pi/agents/*.md` only when the
-project is trusted. Project names override user names. A role is:
+Read from `~/.pi/agent/sidekicks/*.md`, and from `<cwd>/.pi/sidekicks/*.md` only when the
+project is trusted. Project names override user names. An agent definition is:
 
 ```markdown
 ---
@@ -75,13 +79,39 @@ Complete the assigned task. Ask the parent when needed; wait only when blocked.
 
 Optional frontmatter: `model` (exact `provider/model-id`, or an unambiguous model
 ID) and `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, when
-supported). Precedence: launch override > role > current parent. Instructions append
+supported). Precedence: launch override > agent > current parent. Instructions append
 to Pi's normal system prompt. Normal skill/project/extension discovery remains on.
+`instructions` is the Markdown body below frontmatter, not a launch argument; `task`
+is the assignment. The body is optional; a general agent can have only frontmatter:
+
+```markdown
+---
+name: general
+description: General-purpose agent
+---
+```
+
+To use a different folder, add this top-level setting to `~/.pi/agent/settings.json`
+or trusted project `.pi/settings.json`:
+
+```json
+{
+  "sidekicks": {
+    "agentsDir": "/path/to/my-definitions"
+  }
+}
+```
+
+When set, only that folder is searched, not either default. Relative paths resolve
+from Pi's working directory; `~/` is supported. Invalid or missing configured folders
+report an error rather than falling back. Omit `agentsDir` to use the defaults.
+Use `/reload` after changing settings or definitions. Existing `agents/` folders
+are not read or migrated; they remain available for other extensions.
 
 **Legacy migration:** unknown frontmatter is ignored, including tool restrictions,
 skill filters, and `systemPromptMode: replace`. Model pins in the old extension's
-`settings.json` overrides are not imported. Existing roles without frontmatter
-model/thinking inherit the parent; move pins manually if wanted. No roles are rewritten.
+`settings.json` overrides are not imported. Existing definitions without frontmatter
+model/thinking inherit the parent; move pins manually if wanted. No files are rewritten.
 
 ## Lifecycle and limits
 

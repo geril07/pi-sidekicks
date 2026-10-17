@@ -10,12 +10,12 @@ export type RunState = "starting" | "running" | "waiting" | "completed" | "faile
 export interface Question { id: string; text: string; delivered?: boolean }
 export interface Run { id: string; state: RunState; question?: Question; result?: string; delivered: boolean }
 export interface ChildRecord {
-  id: string; ownerSessionId: string; name: string; role: string; instructions: string;
+  id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
   questions?: (Question & { runId: string })[];
 }
 export interface ChildSnapshot {
-  id: string; name: string; role: string; model: string; thinking: Thinking;
+  id: string; name: string; agent: string; model: string; thinking: Thinking;
   run: Run; connected: boolean; activity: string; sessionPath: string;
   questions?: (Question & { runId: string })[];
 }
@@ -69,8 +69,8 @@ export class Manager {
   snapshot(): ChildSnapshot[] { return [...this.children.values()].map((child) => this.view(child)); }
 
   private view(child: Child): ChildSnapshot {
-    const { id, name, role, model, thinking, run, sessionPath } = child.record;
-    return { id, name, role, model, thinking, run: structuredClone(run), sessionPath,
+    const { id, name, agent, model, thinking, run, sessionPath } = child.record;
+    return { id, name, agent, model, thinking, run: structuredClone(run), sessionPath,
       connected: !!child.rpc && !child.closing, activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
@@ -93,11 +93,11 @@ export class Manager {
     this.options.changed();
   }
 
-  async launch(input: { role: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking }, signal?: AbortSignal): Promise<ChildSnapshot> {
+  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking }, signal?: AbortSignal): Promise<ChildSnapshot> {
     this.capacity();
     const id = randomUUID();
-    const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name: input.name ?? input.role,
-      role: input.role, instructions: input.instructions, cwd: this.options.cwd,
+    const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name: input.name ?? input.agent,
+      agent: input.agent, instructions: input.instructions, cwd: this.options.cwd,
       sessionPath: join(this.options.directory, `${id}.jsonl`), model: input.model, thinking: input.thinking,
       run: { id: randomUUID(), state: "starting", delivered: false } });
     this.children.set(id, child);
@@ -200,7 +200,7 @@ export class Manager {
     };
     try { writeFileSync(fd, lockContents); }
     finally { closeSync(fd); }
-    const promptPath = join(this.options.directory, `${record.id}.role.md`);
+    const promptPath = join(this.options.directory, `${record.id}.agent.md`);
     writeFileSync(promptPath, `${record.instructions}\n\nUse ask_parent directly for questions: wait:true pauses when blocked; wait:false asks while you continue. Do not delegate to other agents.`, { mode: 0o600 });
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
       "--append-system-prompt", promptPath, "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];

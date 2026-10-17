@@ -30,17 +30,17 @@ export class StatusWidget implements Component {
 
   render(width: number): string[] {
     const children = this.snapshot();
+    if (!children.length) return [];
     const running = children.filter((child) => ["starting", "running"].includes(child.run.state)).length;
     const waiting = children.filter((child) => child.run.state === "waiting").length;
     const lines = [fit(`Sidekicks ${this.expanded ? "▾" : "▸"} ${running} working · ${waiting} waiting · ${children.length} total  [ctrl+alt+s / ctrl+alt+n]`, width)];
     if (!this.expanded) return lines;
-    if (!children.length) return [...lines, fit("  No children launched.", width)];
     let selected = children.findIndex((child) => child.id === this.selectedId);
     if (selected < 0) { selected = 0; this.selectedId = children[0].id; }
     const first = Math.max(0, selected - 7);
     for (const child of children.slice(first, first + 8)) {
       const state = child.connected ? child.run.state : `detached/${child.run.state}`;
-      lines.push(fit(`${child.id === this.selectedId ? "›" : " "} ${child.name} (${child.role}) · ${child.model}/${child.thinking} · ${state} · ${child.activity}`, width));
+      lines.push(fit(`${child.id === this.selectedId ? "›" : " "} ${child.name} (${child.agent}) · ${child.model}/${child.thinking} · ${state} · ${child.activity}`, width));
     }
     if (children.length > 8) lines.push(fit(`  ${first + 1}–${Math.min(first + 8, children.length)} of ${children.length}`, width));
     return lines;

@@ -12,9 +12,9 @@ async function isolated(scenario: string) {
   const dir = await mkdtemp("/tmp/opencode/sidekicks-e2e-");
   const agent = join(dir, "agent");
   await mkdir(join(agent, "extensions"), { recursive: true });
-  await mkdir(join(agent, "agents"));
+  await mkdir(join(agent, "sidekicks"));
   await symlink(resolve("test/fixtures/faux-provider.ts"), join(agent, "extensions", "faux-provider.ts"));
-  await writeFile(join(agent, "agents", "worker.md"), "---\nname: worker\ndescription: Test worker\n---\nComplete the delegated task.\n");
+  await writeFile(join(agent, "sidekicks", "worker.md"), "---\nname: worker\ndescription: Test worker\n---\nComplete the delegated task.\n");
   const log = join(dir, "calls.jsonl");
   return { dir, agent, log, env: { ...process.env, PI_CODING_AGENT_DIR: agent,
     SIDEKICKS_TEST_LOG: log, SIDEKICKS_TEST_SCENARIO: scenario } };
@@ -40,7 +40,7 @@ test(`nonblocking questions notify during work, accept correlated active/idle re
     }
   };
   const calls = async () => (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  const child = await manager.launch({ role: "worker", instructions: "Work", task: "Ask and continue", model: "sidekicks-test/scripted", thinking: "low" });
+  const child = await manager.launch({ agent: "worker", instructions: "Work", task: "Ask and continue", model: "sidekicks-test/scripted", thinking: "low" });
   await waitFor(() => deliveries.length === 3);
   assert(deliveries.every((d) => d.kind === "question" && d.child.run.state === "running"));
   const questions = manager.snapshot()[0].questions!;
@@ -98,7 +98,7 @@ test("a nonblocking reply does not resume or cancel a later blocking question", 
     const deadline = performance.now() + 5000;
     while (!predicate()) { assert(performance.now() < deadline, "State transition timed out"); await delay(10); }
   };
-  const child = await manager.launch({ role: "worker", instructions: "Work", task: "Ask twice", model: "sidekicks-test/scripted", thinking: "low" });
+  const child = await manager.launch({ agent: "worker", instructions: "Work", task: "Ask twice", model: "sidekicks-test/scripted", thinking: "low" });
   await waitFor(() => notifications.length === 2);
   const waiting = manager.snapshot()[0];
   assert.equal(waiting.run.state, "waiting");
@@ -118,6 +118,16 @@ test("a nonblocking reply does not resume or cancel a later blocking question", 
 for (const scenario of ["orchestrator", "nonblocking-parent"]) {
 test(`real parent extension launches, receives a question, answers, and gets completion without polling: ${scenario}`, { timeout: 30_000 }, async (t) => {
   const h = await isolated(scenario);
+  if (scenario === "orchestrator") {
+    await writeFile(join(h.agent, "sidekicks", "worker.md"), "---\nname: worker\ndescription: Test worker without extra instructions\n---\n");
+    await mkdir(join(h.agent, "agents"));
+    await writeFile(join(h.agent, "agents", "bad.md"), "Ignore another extension's definitions");
+  } else {
+    await mkdir(join(h.dir, "custom-definitions"));
+    await writeFile(join(h.dir, "custom-definitions", "worker.md"), "---\nname: worker\ndescription: Test worker from config\n---\nCustom configured instructions.\n");
+    await writeFile(join(h.agent, "settings.json"), JSON.stringify({ sidekicks: { agentsDir: "custom-definitions" } }));
+    await writeFile(join(h.agent, "sidekicks", "worker.md"), "Default folder must not be read when configured");
+  }
   const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
     "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
     { cwd: h.dir, env: h.env });
@@ -150,6 +160,7 @@ test(`real parent extension launches, receives a question, answers, and gets com
   assert.equal(child.run.state, "completed");
   assert.equal(child.model, "sidekicks-test/scripted");
   assert.equal(child.thinking, "low");
+  if (scenario === "nonblocking-parent") assert.equal(child.instructions.trim(), "Custom configured instructions.");
   const transcript = await readFile(child.sessionPath, "utf8");
   assert.match(transcript, /Sidekicks answer to/);
   assert.match(transcript, /"action":"answered"/);
@@ -177,7 +188,7 @@ test("real child reopens its persisted conversation, loading ambient extensions 
   t.after(() => manager.shutdown());
   const nextDelivery = () => new Promise<void>((resolve) => { resolveDelivery = resolve; });
   let delivered = nextDelivery();
-  const child = await manager.launch({ role: "worker", instructions: "Work", task: "Ask", model: "sidekicks-test/scripted", thinking: "low" });
+  const child = await manager.launch({ agent: "worker", instructions: "Work", task: "Ask", model: "sidekicks-test/scripted", thinking: "low" });
   await delivered;
   const question = deliveries.at(-1)!.run.question!;
   delivered = nextDelivery();

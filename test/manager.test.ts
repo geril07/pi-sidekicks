@@ -25,7 +25,7 @@ async function harness(mode = "hold") {
     waiters.add(wake);
     wake();
   });
-  const launch = (name = "worker") => manager.launch({ role: name, instructions: "Do the task", name,
+  const launch = (name = "worker") => manager.launch({ agent: name, instructions: "Do the task", name,
     task: "Work", model: "local/scripted", thinking: "off" });
   return { manager, options, directory, records, deliveries, waitFor, launch };
 }
@@ -50,7 +50,7 @@ test("64 reservations including a waiting assignment fill capacity; cancelled an
   const child = await h.launch();
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "waiting");
   const reserveRemaining = () => Array.from({ length: MAX_ACTIVE_ASSIGNMENTS - 1 }, () => assert.rejects(h.manager.launch({
-    role: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
+    agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
   }, AbortSignal.abort()), /abort/i));
   const reservations = reserveRemaining();
   await assert.rejects(h.launch("overflow"), /64 assignments/);
@@ -58,7 +58,7 @@ test("64 reservations including a waiting assignment fill capacity; cancelled an
   await h.manager.answer(child.id, "question-1", "Choose A");
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
   const next = reserveRemaining();
-  const extra = assert.rejects(h.manager.launch({ role: "worker", instructions: "Work", task: "Work",
+  const extra = assert.rejects(h.manager.launch({ agent: "worker", instructions: "Work", task: "Work",
     model: "local/scripted", thinking: "off" }, AbortSignal.abort()), /abort/i);
   await assert.rejects(h.launch("overflow"), /64 assignments/);
   await Promise.all([...next, extra]);
@@ -164,8 +164,8 @@ test("invalid model/thinking and malformed RPC fail startup without keeping a li
   const h = await harness();
   const invalid = await harness("invalid");
   t.after(() => Promise.all([h.manager.shutdown(), invalid.manager.shutdown()]));
-  await assert.rejects(h.manager.launch({ role: "worker", instructions: "work", task: "work", model: "missing/model", thinking: "off" }), /exactly one/);
-  await assert.rejects(h.manager.launch({ role: "worker", instructions: "work", task: "work", model: "local/scripted", thinking: "max" }), /unsupported/);
+  await assert.rejects(h.manager.launch({ agent: "worker", instructions: "work", task: "work", model: "missing/model", thinking: "off" }), /exactly one/);
+  await assert.rejects(h.manager.launch({ agent: "worker", instructions: "work", task: "work", model: "local/scripted", thinking: "max" }), /unsupported/);
   await assert.rejects(invalid.launch(), /invalid RPC JSON/);
   assert(h.manager.snapshot().every((child) => !child.connected && child.run.state === "failed"));
   assert.equal(invalid.manager.snapshot()[0].run.state, "failed");

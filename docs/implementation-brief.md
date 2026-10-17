@@ -1,7 +1,7 @@
 # V1 implementation brief
 
 Updated 2026-10-18. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local TypeScript checking, 40 scripted-provider/unit tests, and all three optional
+Local TypeScript checking, 45 scripted-provider/unit tests, and all three optional
 terminal scenarios pass. The operator's real
 provider/MCP combination is not verified, and the extension is not enabled there.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
@@ -18,7 +18,7 @@ observational runtime. Child-local question reservations only protect execution.
 
 | Entity | Identity and state |
 |---|---|
-| Child | Stable ID, role body, name, model/thinking, cwd, session path, owner parent session; process is replaceable. |
+| Child | Stable ID, agent definition body, name, model/thinking, cwd, session path, owner parent session; process is replaceable. |
 | Assignment/run | Separate ID; `starting` → `running` ↔ `waiting` → `completed`, `failed`, `cancelled`, or `interrupted`. |
 | Question | Separate ID tied to its originating run; pending until answered, withdrawn, or cancelled. One blocking barrier per run; multiple nonblocking questions per conversation. |
 
@@ -30,17 +30,25 @@ claim that 64 full Pi processes have been validated. Typical usage is not a limi
 
 ### Startup and continuation
 
-1. Resolve role, model, and thinking: launch override > role > current parent.
-   Unknown legacy frontmatter is ignored. Normal user roles are available; project
-   roles are read only when trusted. Role instructions append to the normal prompt.
+1. Resolve agent, model, and thinking: launch override > agent > current parent.
+   Unknown legacy frontmatter is ignored. Normal user definitions are available;
+   project definitions are read only when trusted. Agent instructions (the Markdown
+   body below frontmatter) append to the normal prompt; `task` is separate. The
+   body is optional; a general agent can supply only name/description frontmatter.
+   Default definition folders are `<agentDir>/sidekicks/` and trusted project
+   `.pi/sidekicks/`, never `agents/`. Read `sidekicks.agentsDir` from Pi's public
+   `getSettings()` effective configuration; when set it replaces both defaults.
+   Resolve relative paths from parent cwd and expand `~/`. Invalid/missing overrides
+   fail rather than falling back. No CLI flag or separate settings loader is added.
 2. Reserve an assignment slot and acquire an exclusive child-session writer lock.
-   Write its role body to a private file under Pi user data.
+   Write its agent definition body to a private file under Pi user data.
 3. Start the parent's Pi CLI with `--mode rpc`, explicit `--session`, appended role
    file, and explicit `-e src/child.ts`. Inherit the environment and cwd. For an
    untrusted parent, add `--no-approve`; do not bypass trust with `--approve`.
 4. Query the child's live catalog, select the exact model/thinking, and verify
    effective state and session path before prompting. Unsupported choices fail.
-5. Submit a framed task and return after acceptance, not completion. Startup errors
+5. The parent tool is `subagent`; launch selects the definition with `agent`.
+   Submit a framed task and return after acceptance, not completion. Startup errors
    return directly; uncertainty after submission is interruption, not proof of failure.
 
 `send` steers running work or starts a new run in the same conversation. A blocking
@@ -49,7 +57,7 @@ answer continues the waiting run. Nonblocking answers use the child-only interna
 and `deliverAs: "steer"`: append at a safe boundary while running, or immediately
 while idle, without a new model turn. Framed answer text is message content, not
 an executable command. A stopped/detached child reopens its saved session and
-reapplies its saved role/model configuration. Model changes require a new child.
+reapplies its saved agent/model configuration. Model changes require a new child.
 Framing ensures task/guidance/answer text cannot become a leading slash command.
 
 Use a small raw JSONL transport: public `RpcClient` cannot answer extension UI
@@ -132,7 +140,9 @@ If a batch also contains a blocking call, its barrier still defers sibling calls
 
 ## Human UI boundary
 
-`widget.ts` renders compact state above the editor. Its summary toggles on click
+`widget.ts` renders compact state above the editor only when the session has
+children, including settled conversations available for follow-up. It renders no
+rows for an empty session. Its summary toggles on click
 without taking focus; clicks require fullscreen. Keyboard equivalents work in both
 modes. A small capturing overlay owns arrows during explicit navigation; Escape
 closes it through Pi's public `done()` API. Editor text/cursor/paste are untouched.
@@ -154,17 +164,17 @@ are not hidden. The operator decides whether to disable the old package for a tr
 ```text
 src/
   index.ts     Parent tool/command/shortcuts, lifecycle, delivery, dialog bridge
-               → manager, roles, widget
+               → manager, agents, widget
   manager.ts   Child/run/question authority, concurrency, persistence, launch/stop
                → rpc
   rpc.ts       Spawn, JSONL framing/correlation, deadlines, process-group cleanup
                → Node built-ins; Pi protocol types only
   child.ts     Child-only ask_parent and execution-boundary hooks
                → public Pi extension API
-  roles.ts     Trusted Markdown discovery, validation, project/user precedence
+  agents.ts    Trusted Markdown discovery, validation, project/user precedence
   widget.ts    Bounded status rendering, navigation, cancellable editor overlay
 test/
-  *.test.ts    Observable RPC, lifecycle, role, widget, and real-Pi integration tests
+  *.test.ts    Observable RPC, lifecycle, agent definition, widget, and real-Pi integration tests
   fixtures/    Scripted local provider and fake RPC peer
   tui-smoke.ts Real terminal trial using a separate named tmux server
 docs/          Scope, this design, historical baseline/research
@@ -206,3 +216,7 @@ trust behavior in the intended project, coexistence with the old subagent packag
 and ambient extension hooks. Parent SIGKILL/escaped descendants remain an explicit
 limitation, not a claimed recovery guarantee. The historical research source checks
 are useful evidence, not substitutes for these live checks.
+
+The old pi-subagents package must be disabled for a trial because both packages
+register `subagent`. Registry records now use `agent`; earlier development records
+with only `role` are not restored. No operator sessions or definitions were migrated.

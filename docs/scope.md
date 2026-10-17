@@ -28,7 +28,9 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
 - Continue a child's conversation rather than rediscovering prior work in a new agent.
 - MCP adapter and the operator's provider extensions must work inside children.
 - Completion delivery should not require repetitive status polling or shell/file inspection.
-- A compact live status widget remains visible near the main editor.
+- A compact live status widget appears near the main editor when relevant. The
+  user's later correction hides it when the session has no children; existing
+  child conversations keep status/results available for follow-up.
 - The widget can collapse and expand, including clicking its visible summary.
 - Arrow-key navigation can enter and move through child rows, comparable to the
   current nicobailon compact status UI. Preserve normal editor input outside that mode.
@@ -70,7 +72,15 @@ features permanently. Revisit only for a concrete need.
 
 ## Role settings
 
-Required: a role name, description, instruction body, and optional model/thinking.
+Current interface terminology is **agent**, not role: the `subagent` tool selects a
+Markdown definition with `agent`. Earlier scope/history used the word role.
+The user requested separate definition discovery: use `sidekicks/` instead of
+`agents/` by default, with an optional `sidekicks.agentsDir` setting in Pi config
+to select a single replacement folder. Do not add a CLI flag or rewrite the other
+extension's definitions/settings.
+
+Required: an agent name and description. The instruction body and model/thinking
+are optional; the user's later correction allows a general agent with no body.
 Use the existing role files as use cases, not as a schema to copy wholesale.
 
 Precedence is per-launch override > role default > current parent default.

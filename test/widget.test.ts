@@ -5,8 +5,22 @@ import type { ExtensionContext, Theme, KeybindingsManager } from "@earendil-work
 import { StatusWidget } from "../src/widget.ts";
 import type { ChildSnapshot } from "../src/manager.ts";
 
-const child = (id: string): ChildSnapshot => ({ id, name: `Worker ${id}`, role: "worker", model: "local/model", thinking: "low",
+const child = (id: string): ChildSnapshot => ({ id, name: `Worker ${id}`, agent: "worker", model: "local/model", thinking: "low",
   run: { id: `run-${id}`, state: "running", delivered: false }, connected: true, activity: "using read", sessionPath: `/child-${id}.jsonl` });
+
+test("widget is hidden without children and remains available for existing conversations", () => {
+  const children: ChildSnapshot[] = [];
+  const widget = new StatusWidget(() => children);
+  assert.deepEqual(widget.render(120), []);
+  widget.toggle();
+  assert.deepEqual(widget.render(120), []);
+  children.push(child("one"));
+  assert.match(widget.render(120)[0], /1 working/);
+  children[0].run.state = "completed";
+  assert.match(widget.render(120)[1], /completed/);
+  children.length = 0;
+  assert.deepEqual(widget.render(120), []);
+});
 
 test("widget bounds Unicode/activity, sanitizes terminal controls, and click does not request focus", () => {
   const children = [child("one"), child("two")];

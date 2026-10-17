@@ -4,12 +4,12 @@ import { basename, join } from "node:path";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import { Manager, type ChildRecord, type ChildSnapshot } from "./manager.ts";
-import { discoverRoles, thinkingLevels } from "./roles.ts";
+import { discoverAgents, thinkingLevels } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
 import type { Invocation } from "./rpc.ts";
 
 const STATE_ENTRY = "sidekicks:state";
-const DESCRIPTION = "Launch up to 64 asynchronous role-based Pi assignments, send guidance/follow-up, answer a specific child question, stop work, or inspect status. Launch waits only for readiness, not completion. Questions/results arrive automatically; do not poll. Children retain their conversation. Blocking answers resume work; nonblocking answers enter the conversation without restarting idle work. Model/thinking overrides apply at launch only.";
+const DESCRIPTION = "Launch up to 64 asynchronous Pi assignments using named agent definitions, send guidance/follow-up, answer a specific child question, stop work, or inspect status. Launch waits only for readiness, not completion. Questions/results arrive automatically; do not poll. Children retain their conversation. Blocking answers resume work; nonblocking answers enter the conversation without restarting idle work. Model/thinking overrides apply at launch only.";
 
 function invocation(): Invocation {
   const entry = process.argv[1];
@@ -25,7 +25,7 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
     const record = entry.data as ChildRecord | undefined;
     if (!record || typeof record.id !== "string" || typeof record.ownerSessionId !== "string"
       || typeof record.instructions !== "string" || typeof record.sessionPath !== "string"
-      || typeof record.name !== "string" || typeof record.role !== "string" || typeof record.cwd !== "string"
+      || typeof record.name !== "string" || typeof record.agent !== "string" || typeof record.cwd !== "string"
       || typeof record.model !== "string" || !thinkingLevels.includes(record.thinking)
       || !record.run || typeof record.run.id !== "string" || typeof record.run.state !== "string") continue;
     records.set(record.id, record);
@@ -36,6 +36,11 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
 export default function sidekicks(pi: ExtensionAPI): void {
   if (process.env.PI_SIDEKICKS_CHILD) return;
   let current: { manager: Manager; widget: StatusWidget; ctx: ExtensionContext } | undefined;
+  const getAgents = (ctx: ExtensionContext) => {
+    const config = (pi.getSettings() as { sidekicks?: unknown }).sidekicks;
+    if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) throw new Error("sidekicks settings must be an object");
+    return discoverAgents(ctx.cwd, ctx.isProjectTrusted(), { agentsDir: (config as { agentsDir?: unknown } | undefined)?.agentsDir });
+  };
 
   const start = (ctx: ExtensionContext) => {
     const ownerSessionId = ctx.sessionManager.getSessionId();
@@ -109,28 +114,28 @@ export default function sidekicks(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "sidekick", label: "Sidekick", exposure: "model-only", description: DESCRIPTION,
+    name: "subagent", label: "Subagent", exposure: "model-only", description: DESCRIPTION,
     parameters: Type.Object({
       action: Type.Union(["launch", "send", "answer", "stop", "status"].map((value) => Type.Literal(value))),
-      role: Type.Optional(Type.String()), task: Type.Optional(Type.String()), name: Type.Optional(Type.String({ maxLength: 100 })),
+      agent: Type.Optional(Type.String()), task: Type.Optional(Type.String()), name: Type.Optional(Type.String({ maxLength: 100 })),
       model: Type.Optional(Type.String()), thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)))),
       child: Type.Optional(Type.String()), message: Type.Optional(Type.String()), questionId: Type.Optional(Type.String()), answer: Type.Optional(Type.String()),
     }),
     prepareLoadout: () => {
       if (!current) return;
-      let roles = "";
-      try { roles = discoverRoles(current.ctx.cwd, current.ctx.isProjectTrusted()).map((role) => `${role.name}: ${role.description.slice(0, 120)}`).join("; "); }
-      catch { roles = "Role configuration error; status reports it."; }
-      return { descriptions: { sidekick: `${DESCRIPTION}\nAvailable roles: ${roles || "none; add Markdown roles to ~/.pi/agent/agents/"}` } };
+      let agents = "";
+      try { agents = getAgents(current.ctx).map((agent) => `${agent.name}: ${agent.description.slice(0, 120)}`).join("; "); }
+      catch { agents = "Agent configuration error; status reports it."; }
+      return { descriptions: { subagent: `${DESCRIPTION}\nAvailable agents: ${agents || "none; add Markdown definitions to the configured sidekicks.agentsDir or default sidekicks/ folder"}` } };
     },
     async execute(_id, args, signal, _update, ctx) {
       const runtime = current;
       if (!runtime || runtime.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new Error("Sidekicks session is not ready");
-      const fields: Record<string, string[]> = { launch: ["role", "task", "name", "model", "thinking"],
+      const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking"],
         send: ["child", "message"], answer: ["child", "questionId", "answer"], stop: ["child"], status: [] };
       const unexpected = Object.entries(args).filter(([key, value]) => key !== "action" && value !== undefined && !fields[args.action]?.includes(key));
       if (unexpected.length) throw new Error(`Fields not supported for ${args.action}: ${unexpected.map(([key]) => key).join(", ")}. Model/thinking are launch-only.`);
-      const requireText = (name: "role" | "task" | "child" | "message" | "questionId" | "answer") => {
+      const requireText = (name: "agent" | "task" | "child" | "message" | "questionId" | "answer") => {
         const value = args[name];
         if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required for ${args.action}`);
         return value;
@@ -138,20 +143,20 @@ export default function sidekicks(pi: ExtensionAPI): void {
       let data: unknown;
       switch (args.action) {
         case "launch": {
-          const roles = discoverRoles(ctx.cwd, ctx.isProjectTrusted());
-          const role = roles.find((role) => role.name === requireText("role"));
-          if (!role) throw new Error(`Unknown role. Available: ${roles.map((role) => role.name).join(", ") || "none"}`);
-          const model = args.model ?? role.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
-          if (!model) throw new Error("No launch, role, or parent model is available");
-          data = await runtime.manager.launch({ role: role.name, instructions: role.instructions, name: args.name,
-            task: requireText("task"), model, thinking: args.thinking ?? role.thinking ?? pi.getThinkingLevel() }, signal);
+          const agents = getAgents(ctx);
+          const agent = agents.find((agent) => agent.name === requireText("agent"));
+          if (!agent) throw new Error(`Unknown agent. Available: ${agents.map((agent) => agent.name).join(", ") || "none"}`);
+          const model = args.model ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+          if (!model) throw new Error("No launch, agent, or parent model is available");
+          data = await runtime.manager.launch({ agent: agent.name, instructions: agent.instructions, name: args.name,
+            task: requireText("task"), model, thinking: args.thinking ?? agent.thinking ?? pi.getThinkingLevel() }, signal);
           break;
         }
         case "send": data = await runtime.manager.send(requireText("child"), requireText("message"), signal); break;
         case "answer": data = await runtime.manager.answer(requireText("child"), requireText("questionId"), requireText("answer"), signal); break;
         case "stop": data = await runtime.manager.stop(requireText("child")); break;
-        case "status": data = { children: runtime.manager.snapshot(), roles: discoverRoles(ctx.cwd, ctx.isProjectTrusted()).map(({ instructions: _body, ...role }) => role) }; break;
-        default: throw new Error("Unknown sidekick action");
+        case "status": data = { children: runtime.manager.snapshot(), agents: getAgents(ctx).map(({ instructions: _body, ...agent }) => agent) }; break;
+        default: throw new Error("Unknown subagent action");
       }
       return { content: [{ type: "text", text: JSON.stringify(data) }], details: data };
     },

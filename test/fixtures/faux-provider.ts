@@ -70,8 +70,8 @@ export default function fixture(pi: ExtensionAPI): void {
       return fauxAssistantMessage(fauxToolCall("ask_parent", { question: `Question ${state.callCount}?`, wait: state.callCount === 2 }), { stopReason: "toolUse" });
     }
     if (["orchestrator", "dialogs", "nonblocking-parent"].includes(scenario) && !process.env.PI_SIDEKICKS_CHILD) {
-      if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("sidekick", {
-        action: "launch", role: "worker", task: "Ask which option, then finish",
+      if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("subagent", {
+        action: "launch", agent: "worker", task: "Ask which option, then finish",
         ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH ?? '{"model":"sidekicks-test/scripted","thinking":"low"}'),
       }), { stopReason: "toolUse" });
       const text = context.messages.map((message) => JSON.stringify(message)).join("\n");
@@ -79,7 +79,7 @@ export default function fixture(pi: ExtensionAPI): void {
       const question = questions.at(-1);
       if (question && !answered.has(question[2])) {
         answered.add(question[2]);
-        return fauxAssistantMessage(fauxToolCall("sidekick", { action: "answer", child: question[1], questionId: question[2], answer: "Choose A" }), { stopReason: "toolUse" });
+        return fauxAssistantMessage(fauxToolCall("subagent", { action: "answer", child: question[1], questionId: question[2], answer: "Choose A" }), { stopReason: "toolUse" });
       }
       return fauxAssistantMessage(text.includes("Sidekick result") ? "FINAL: child completion received automatically." : "Parent remains usable while the child works.");
     }
