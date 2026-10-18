@@ -119,7 +119,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       deliverGroup: (members) => {
         if (current !== runtime) return;
         const details: GroupDetails = { kind: "group", members: members.map((child) => ({ child: child.name, state: child.run.state,
-          body: child.run.state === "completed" && !child.run.delivered ? child.run.result ?? "" : child.run.state === "cancelled" ? "Stopped by parent." : child.run.state === "failed" ? "Already reported." : "Interrupted." })) };
+          body: child.run.state === "completed" && !child.run.delivered ? child.run.result ?? "" : child.run.state === "cancelled" ? "Stopped by parent." : "Already reported." })) };
         pi.sendMessage({ customType: "sidekicks:group", content: groupText(members), display: true, details },
           { triggerTurn: true, deliverAs: "followUp" });
       },

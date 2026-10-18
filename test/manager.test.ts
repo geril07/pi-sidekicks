@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
@@ -149,6 +149,38 @@ test("a child runs where it is told, and announces itself as a subagent child", 
   assert.deepEqual(prompts.map((prompt) => prompt.cwd).sort(), [await at(h.directory), await at(elsewhere)].sort());
   assert(prompts.every((prompt) => prompt.subagentChild === "1"));
   assert.deepEqual(prompts.map((prompt) => prompt.subagentAgent).sort(), ["home", "reviewer"]);
+});
+
+test("a child whose working directory was removed fails with a clear error and leaves no lock", async (t) => {
+  const h = await harness("hold");
+  t.after(() => h.manager.shutdown());
+  const gone = join(h.directory, "gone");
+  await mkdir(gone);
+  const child = await h.manager.launch({ agent: "w", instructions: "Do the task", name: "w", task: "Work", model: "local/scripted", thinking: "off", cwd: gone });
+  await h.manager.stop(child.id);
+  await rm(gone, { recursive: true });
+  await assert.rejects(h.manager.send("w", "Again"), /Working directory no longer exists: .*\/gone$/);
+  const after = h.manager.snapshot()[0];
+  assert.equal(after.run.state, "failed");
+  assert.match(after.run.result!, /Working directory no longer exists/);
+  assert.deepEqual((await readdir(h.directory)).filter((name) => name.endsWith(".lock")), []);
+  await assert.rejects(h.manager.launch({ agent: "x", instructions: "Do the task", name: "x", task: "Work", model: "local/scripted", thinking: "off", cwd: gone }), /Working directory no longer exists/);
+  assert.deepEqual((await readdir(h.directory)).filter((name) => name.endsWith(".lock")), []);
+});
+
+test("a result file that cannot be written does not fail the run; the cut result points to the transcript", { skip: process.getuid?.() === 0 }, async (t) => {
+  const h = await harness("long-result");
+  t.after(async () => { await chmod(h.directory, 0o700); await h.manager.shutdown(); });
+  await h.manager.launch({ agent: "w", instructions: "Do the task", name: "w", task: "Work", model: "local/scripted", thinking: "off" });
+  await chmod(h.directory, 0o500);
+  await h.waitFor(() => h.deliveries.length === 1);
+  const done = h.deliveries[0].child;
+  assert.equal(done.run.state, "completed");
+  assert.equal(done.run.resultFile, undefined);
+  assert(done.run.result!.endsWith(`[Truncated. Full result: ${done.sessionPath}]`));
+  assert.equal(done.run.result!.indexOf("\n[Truncated"), 24_000);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(h.deliveries.length, 1);
 });
 
 test("explicit stop wins a race with final result extraction", async (t) => {

@@ -30,8 +30,9 @@ export function formatElapsed(ms: number): string {
   if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 }
+// Runs that finished before endedAt was recorded have no end to measure to.
 export const elapsedOf = (run: Run, now = Date.now()) =>
-  run.startedAt === undefined ? undefined : formatElapsed((run.endedAt ?? now) - run.startedAt);
+  run.startedAt === undefined || (run.endedAt === undefined && !isActive(run.state)) ? undefined : formatElapsed((run.endedAt ?? now) - run.startedAt);
 
 /** Provider prefix is noise in a row; the full id stays in snapshots and transcripts. */
 export const modelLabel = (child: Pick<ChildSnapshot, "model" | "thinking">) => `${child.model.split("/").pop()}:${child.thinking}`;
@@ -75,7 +76,7 @@ export function groupText(members: ChildSnapshot[]): string {
   return [groupHeadline(members.map((child) => ({ state: child.run.state }))),
     ...members.map((child) => child.run.state === "completed" && !child.run.delivered
       ? deliveryText(child, "result")
-      : `Sidekick ${child.name} ${STATES[child.run.state].word}${child.run.state === "failed" ? " (already reported)" : ""}.`)].join("\n\n");
+      : `Sidekick ${child.name} ${STATES[child.run.state].word}${child.run.state === "failed" || child.run.state === "interrupted" ? " (already reported)" : ""}.`)].join("\n\n");
 }
 
 /** What the parent model reads when a child finishes or asks. The human sees a rendered version of the same message. */

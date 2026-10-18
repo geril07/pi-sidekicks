@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
@@ -40,6 +40,7 @@ export interface ManagerOptions {
 
 const active = (state: RunState) => state === "starting" || state === "running" || state === "waiting";
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
+const DETACHED = "Parent session detached. Continue explicitly; no automatic replay; previous external effects may be unknown.";
 const CHILD_BRIEFING = [
   "You are a sidekick: a child agent working for a parent agent. Messages that start with \"Sidekicks task:\" are your assignment; \"guidance\", \"follow-up\" and \"answer\" messages also come from the parent.",
   "Your final message is returned to the parent as your result, and the parent sees nothing else you did. Make it self-contained: what you did or found, evidence (paths, line numbers, commands), and what is still open.",
@@ -103,7 +104,7 @@ export class Manager {
       const record = structuredClone(saved);
       if (active(record.run.state)) {
         record.run = { ...record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
-          result: "Parent session detached. Continue explicitly; previous external effects may be unknown.", delivered: true };
+          result: DETACHED, delivered: true };
       }
       record.questions = [];
       this.children.set(record.id, this.child(record));
@@ -255,6 +256,7 @@ export class Manager {
 
   private async open(child: Child): Promise<void> {
     const record = child.record;
+    if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
     const lock = `${record.sessionPath}.lock`;
     let fd: number;
     try { fd = openSync(lock, "wx", 0o600); }
@@ -466,7 +468,8 @@ export class Manager {
     return Promise.all(named.map(async (input) => {
       try { return { child: await this.launch(input, signal) }; }
       catch (error) {
-        const child = [...this.children.values()].find((child) => child.record.name === input.name)!;
+        const child = [...this.children.values()].find((child) => child.record.name === input.name);
+        if (!child) throw error;
         return { child: this.view(child), error: errorText(error) };
       }
     }));
@@ -509,7 +512,7 @@ export class Manager {
       child.record.questions = [];
       if (active(child.record.run.state)) {
         child.record.run = { ...child.record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
-          result: "Parent session detached. Continue explicitly; no automatic replay.", delivered: true };
+          result: DETACHED, delivered: true };
       }
       if (persist) this.options.persist(structuredClone(child.record));
     }

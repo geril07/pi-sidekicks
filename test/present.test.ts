@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
 import { describeTool, type ChildSnapshot } from "../src/manager.ts";
-import { groupText, deliveryText, describeChild, formatElapsed, statusText } from "../src/present.ts";
+import { groupText, deliveryText, describeChild, elapsedOf, formatElapsed, statusText } from "../src/present.ts";
 import { renderGroup, renderCall, renderDelivery, renderResult, type DeliveryDetails } from "../src/render.ts";
 
 const child: ChildSnapshot = { id: "uuid", name: "explorer-1", agent: "explorer", model: "openai/gpt-6", thinking: "high",
@@ -65,12 +65,21 @@ test("transcript renderers show status, bounded previews, and sanitized text", (
   assert.match(lines(renderResult({ content: [{ type: "text", text: "Unknown child: x" }] }, { expanded: false }, theme, true))[0], /Unknown child: x/);
 });
 
+test("a finished run without a recorded end shows no elapsed time, so it cannot tick forever", () => {
+  const started = Date.now() - 90_000;
+  assert.equal(elapsedOf({ id: "r", state: "completed", delivered: true, startedAt: started }), undefined);
+  assert.equal(elapsedOf({ id: "r", state: "completed", delivered: true, startedAt: started, endedAt: started + 5_000 }), "5s");
+  assert.equal(elapsedOf({ id: "r", state: "running", delivered: false, startedAt: started }), "1m30s");
+});
+
 test("group messages contain full held results and short previously reported outcomes", () => {
   const completed = { ...child, run: { ...child.run, state: "completed" as const, result: "First full result\nsecond line" } };
   const failed = { ...child, name: "bad", run: { ...child.run, state: "failed" as const, delivered: true, result: "Already delivered error details" } };
   const stopped = { ...child, name: "stopped", run: { ...child.run, state: "cancelled" as const, delivered: true } };
-  const message = groupText([completed, failed, stopped]);
-  assert.match(message, /batch of 3 · 1 completed · 1 failed · 1 stopped/);
+  const interrupted = { ...child, name: "cut", run: { ...child.run, state: "interrupted" as const, delivered: true } };
+  const message = groupText([completed, failed, stopped, interrupted]);
+  assert.match(message, /batch of 4 · 1 completed · 1 failed · 1 stopped · 1 interrupted/);
+  assert.match(message, /Sidekick cut interrupted \(already reported\)/);
   assert.match(message, /First full result\nsecond line/);
   assert.match(message, /Sidekick bad failed \(already reported\)/);
   assert.match(message, /Sidekick stopped stopped/);
