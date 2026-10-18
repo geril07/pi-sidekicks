@@ -8,7 +8,7 @@ import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { id: string; state: RunState; question?: Question; result?: string; delivered: boolean; startedAt?: number; endedAt?: number }
+export interface Run { groupId?: string; id: string; state: RunState; question?: Question; result?: string; delivered: boolean; startedAt?: number; endedAt?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
@@ -30,6 +30,7 @@ export interface ManagerOptions {
   invocation: Invocation; env?: NodeJS.ProcessEnv;
   persist: (record: ChildRecord) => void;
   deliver: (child: ChildSnapshot, kind: "question" | "result", question?: Question & { runId?: string }) => void;
+  deliverGroup?: (members: ChildSnapshot[]) => void;
   changed: () => void;
   dialog: (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal) => Promise<RpcExtensionUIResponse | undefined>;
   restored?: ChildRecord[];
@@ -54,6 +55,11 @@ export function describeTool(name: string, args: unknown): string {
   return oneLine(key ? `${name} ${record[key] as string}` : name).slice(0, 160);
 }
 
+const bootId = (): string | undefined => {
+  try { return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined; }
+  catch { return undefined; }
+};
+
 const pidAlive = (pid: unknown) => {
   if (!Number.isInteger(pid)) return true;
   try { process.kill(pid as number, 0); return true; }
@@ -61,7 +67,7 @@ const pidAlive = (pid: unknown) => {
 };
 
 /**
- * Removes a lock only when both recorded processes are provably gone. Anything unreadable or
+ * Removes a lock from a previous boot or when both recorded processes are gone. Anything unreadable or
  * ambiguous counts as live: two writers on one transcript is worse than a refused resume.
  * PIDs are per-machine, so this assumes the lock was written on this host.
  */
@@ -69,9 +75,12 @@ function removeDeadLock(lock: string): boolean {
   let contents: string;
   try { contents = readFileSync(lock, "utf8"); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-  let owner: { pid?: unknown; childPid?: unknown };
+  let owner: { pid?: unknown; childPid?: unknown; bootId?: unknown };
   try { owner = JSON.parse(contents); } catch { return false; }
-  if (!owner || typeof owner !== "object" || pidAlive(owner.pid) || (owner.childPid !== undefined && pidAlive(owner.childPid))) return false;
+  if (!owner || typeof owner !== "object") return false;
+  const currentBoot = bootId();
+  const rebooted = typeof owner.bootId === "string" && !!owner.bootId && currentBoot !== undefined && owner.bootId !== currentBoot;
+  if (!rebooted && (pidAlive(owner.pid) || (owner.childPid !== undefined && pidAlive(owner.childPid)))) return false;
   // Re-read so a lock another parent just replaced is not removed.
   if (readFileSync(lock, "utf8") !== contents) return false;
   unlinkSync(lock);
@@ -119,8 +128,7 @@ export class Manager {
     if (!child) throw new Error(`Unknown child: ${ref}. Known: ${[...this.children.values()].map((known) => known.record.name).join(", ") || "none"}`);
     return child;
   }
-  private uniqueName(wanted: string | undefined, agent: string): string {
-    const taken = new Set([...this.children.values()].map((child) => child.record.name));
+  private uniqueName(wanted: string | undefined, agent: string, taken = new Set([...this.children.values()].map((child) => child.record.name))): string {
     if (wanted !== undefined) {
       if (taken.has(wanted)) throw new Error(`Name already used by another child: ${wanted}`);
       return wanted;
@@ -130,10 +138,10 @@ export class Manager {
       if (!taken.has(candidate)) return candidate;
     }
   }
-  private capacity(): void {
+  private capacity(count = 1): void {
     this.assertAlive();
-    if ([...this.children.values()].filter((child) => active(child.record.run.state)).length >= MAX_ACTIVE_ASSIGNMENTS) {
-      throw new Error(`${MAX_ACTIVE_ASSIGNMENTS} assignments are already active, including waiting questions. Stop or finish one first.`);
+    if ([...this.children.values()].filter((child) => active(child.record.run.state)).length + count > MAX_ACTIVE_ASSIGNMENTS) {
+      throw new Error(`At most ${MAX_ACTIVE_ASSIGNMENTS} assignments may be active, including waiting questions. Stop or finish work before adding this assignment or batch.`);
     }
   }
   private commit(child: Child, persist = true): void {
@@ -142,14 +150,14 @@ export class Manager {
     this.options.changed();
   }
 
-  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking }, signal?: AbortSignal): Promise<ChildSnapshot> {
+  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking; groupId?: string }, signal?: AbortSignal): Promise<ChildSnapshot> {
     this.capacity();
     const id = randomUUID();
     const name = this.uniqueName(input.name, input.agent);
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: this.options.cwd,
       sessionPath: join(this.options.directory, `${id}.jsonl`), model: input.model, thinking: input.thinking,
-      run: { id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() } });
+      run: { groupId: input.groupId, id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() } });
     this.children.set(id, child);
     this.commit(child);
     await this.start(child, frame("task", input.task), signal);
@@ -169,7 +177,17 @@ export class Manager {
       } finally { child.operation = false; }
     } else {
       this.capacity();
+      const previous = child.record.run;
+      if (previous.groupId && previous.state === "completed" && !previous.delivered) {
+        previous.delivered = true;
+        this.options.deliver(this.view(child), "result");
+        this.commit(child);
+      }
+      if (previous.state === "interrupted" || previous.state === "cancelled") {
+        message = `Your previous run was ${previous.state === "cancelled" ? "stopped" : "interrupted"}. You may have made partial changes. Check the current state before repeating anything.\n${message}`;
+      }
       child.record.run = { id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() };
+      this.releaseHeld();
       child.lastError = undefined;
       this.commit(child);
       await this.start(child, frame("follow-up", message), signal);
@@ -248,7 +266,7 @@ export class Manager {
         throw retry;
       }
     }
-    const writer = { pid: process.pid, token: randomUUID(), owner: this.options.ownerSessionId };
+    const writer = { pid: process.pid, bootId: bootId(), token: randomUUID(), owner: this.options.ownerSessionId };
     let lockContents = JSON.stringify(writer);
     child.release = () => {
       try { if (readFileSync(lock, "utf8") === lockContents) unlinkSync(lock); }
@@ -383,17 +401,51 @@ export class Manager {
   private finish(child: Child, state: RunState, result: string, deliver = true): void {
     const run = child.record.run;
     if (!active(run.state)) return;
+    if (!deliver) run.groupId = undefined;
     run.state = state;
     run.question = undefined;
     if (state !== "completed") child.record.questions = [];
     run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${child.record.sessionPath}]`;
     child.activity = state;
+    if (run.groupId && state === "cancelled") run.delivered = true;
     this.commit(child);
-    if (deliver && !run.delivered && this.alive) {
+    if (deliver && !(run.groupId && state === "completed") && !run.delivered && this.alive) {
       run.delivered = true;
       this.options.deliver(this.view(child), "result");
       this.commit(child);
     }
+    this.releaseHeld();
+  }
+
+  releaseHeld(): void {
+    if (!this.alive || !this.options.deliverGroup) return;
+    const groups = new Set(this.snapshot().map((child) => child.run.groupId).filter((id) => id !== undefined));
+    for (const id of groups) {
+      const members = [...this.children.values()].filter((child) => child.record.run.groupId === id);
+      if (members.some((child) => active(child.record.run.state))) continue;
+      const held = members.filter((child) => child.record.run.state === "completed" && !child.record.run.delivered);
+      if (!held.length) continue;
+      this.options.deliverGroup(members.map((child) => this.view(child)));
+      for (const child of held) { child.record.run.delivered = true; this.commit(child); }
+    }
+  }
+
+  async launchBatch(inputs: Parameters<Manager["launch"]>[0][], results: "together" | "each" = "together", signal?: AbortSignal): Promise<{ child: ChildSnapshot; error?: string }[]> {
+    this.capacity(inputs.length);
+    const taken = new Set(this.snapshot().map((child) => child.name));
+    const groupId = randomUUID();
+    const named = inputs.map((input) => {
+      const name = this.uniqueName(input.name, input.agent, taken);
+      taken.add(name);
+      return { ...input, name, groupId: results === "together" ? groupId : undefined };
+    });
+    return Promise.all(named.map(async (input) => {
+      try { return { child: await this.launch(input, signal) }; }
+      catch (error) {
+        const child = [...this.children.values()].find((child) => child.record.name === input.name)!;
+        return { child: this.view(child), error: errorText(error) };
+      }
+    }));
   }
 
   async stop(id: string): Promise<ChildSnapshot> {

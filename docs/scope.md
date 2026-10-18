@@ -116,7 +116,9 @@ those records. Existing source is evidence of implementation, not user approval.
 | Tool description forbids delegation unless explicitly requested | Coding-agent instructions were copied into product policy without a scope requirement. Removed from the tool description; actual parent instructions still govern delegation. |
 | Parent and child tools are model-only | Assistant execution-interface choice, not a user prohibition on codemode/scripts. Retained. |
 | Stop closes the process; reload/new/resume/fork/tree stop all children | Assistant lifecycle decisions. Original scope asked for explicit tested behavior, not these exact policies. Retained. |
-| No launch queue or cross-parent adoption | Assistant simplifications, not recorded user requirements. Retained. Stale-lock recovery was added 2026-10-18 at the operator's request, limited to locks whose recorded PIDs are dead. |
+| No launch queue or cross-parent adoption | Assistant simplifications, not recorded user requirements. Retained. Stale-lock recovery was added 2026-10-18 at the operator's request, limited to locks whose recorded PIDs are dead. The agreed boot-ID correction also replaces locks from an earlier known Linux boot, even if a PID was reused; unknown boot IDs keep PID checks. |
+| Batch launch and delivery | Agreed extension of the existing launch action: tasks plus together (default) or each delivery. Validate the whole batch before concurrent startup; derive membership from group IDs on current runs, hold completions, report failures/questions immediately, suppress grouped stop notices, and release held results on explicit follow-up or restore. No scheduler, shared labels, auto-cancellation, or extra tools. |
+| Follow-up after interruption/stop | Agreed partial-change warning before the new assignment; no automatic rerun or rollback. |
 | Python terminal driver | Assistant convenience only. Replaced with TypeScript and Node built-ins; tmux coverage stays optional. |
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task

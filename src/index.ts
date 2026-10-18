@@ -6,14 +6,15 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensio
 import { Manager, type ChildRecord, type ChildSnapshot } from "./manager.ts";
 import { discoverAgents, thinkingLevels } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
-import { deliveryText, describeChild, elapsedOf, statusText } from "./present.ts";
-import { renderCall, renderDelivery, renderResult, type DeliveryDetails, type ToolDetails } from "./render.ts";
+import { groupText, deliveryText, describeChild, elapsedOf, statusText } from "./present.ts";
+import { renderCall, renderDelivery, renderGroup, renderResult, type GroupDetails, type DeliveryDetails, type ToolDetails } from "./render.ts";
 import type { Invocation } from "./rpc.ts";
 
 const STATE_ENTRY = "sidekicks:state";
 const DESCRIPTION = [
   "Delegate work to asynchronous child agents. Each child is a full Pi session with its own conversation; launch returns as soon as the child is running.",
   "- launch: agent + task. Write the task so it stands alone (goal, relevant paths, constraints, what to return). Optional name (unique handle), model, thinking; these apply at launch only.",
+  "- launch batch: tasks [{agent, task, name?, model?, thinking?}] instead of top-level launch fields; optional shared text precedes each task with a blank line. Validates all members before starting; results defaults to together (hold completions for one batch message, failures/questions arrive immediately), or each (individual results).",
   "- send: child + message. Steers a running child; starts a new run in a finished child's existing conversation.",
   "- answer: child + questionId + answer. Replies to a question the child asked.",
   "- stop: child. Ends the work and keeps the conversation.",
@@ -95,6 +96,13 @@ export default function sidekicks(pi: ExtensionAPI): void {
         if (ctx.sessionManager.getSessionId() === ownerSessionId) pi.appendEntry(STATE_ENTRY, record);
       },
       changed: () => runtime.widget?.refresh(),
+      deliverGroup: (members) => {
+        if (current !== runtime) return;
+        const details: GroupDetails = { kind: "group", members: members.map((child) => ({ child: child.name, state: child.run.state,
+          body: child.run.state === "completed" && !child.run.delivered ? child.run.result ?? "" : child.run.state === "cancelled" ? "Stopped by parent." : child.run.state === "failed" ? "Already reported." : "Interrupted." })) };
+        pi.sendMessage({ customType: "sidekicks:group", content: groupText(members), display: true, details },
+          { triggerTurn: true, deliverAs: "followUp" });
+      },
       deliver: (child, kind, question) => {
         if (current !== runtime) return;
         const blocking = kind === "question" && child.run.question?.id === question?.id;
@@ -106,6 +114,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     });
     runtime.widget = new StatusWidget(() => runtime.manager.snapshot());
     current = runtime;
+    runtime.manager.releaseHeld();
     runtime.widget.install(ctx);
   };
 
@@ -140,6 +149,14 @@ export default function sidekicks(pi: ExtensionAPI): void {
       name: text("launch: unique handle for this child; defaults to the agent name", { maxLength: 100 }),
       model: text("launch: provider/model id; defaults to the agent's model, then the parent's"),
       thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)), { description: "launch: thinking level" })),
+      tasks: Type.Optional(Type.Array(Type.Object({
+        agent: Type.String({ minLength: 1, description: "Agent definition to use" }),
+        task: Type.String({ minLength: 1, description: "Complete, self-contained assignment" }),
+        name: text("Unique child handle", { maxLength: 100 }), model: text("Model override"),
+        thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)))),
+      }), { minItems: 1, description: "launch: batch; mutually exclusive with top-level agent/task/name/model/thinking" })),
+      shared: text("launch with tasks only: common text prepended to each task with a blank line; blank is ignored"),
+      results: Type.Optional(Type.Union([Type.Literal("together"), Type.Literal("each")], { description: "launch with tasks only: together (default) groups completions; each delivers individually" })),
       child: text("send/answer/stop: the child's name"),
       message: text("send: guidance for a running child, or the next assignment for a finished one"),
       questionId: text("answer: id from the child's question"),
@@ -157,7 +174,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     async execute(_id, args, signal, _update, ctx) {
       const runtime = current;
       if (!runtime || runtime.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new Error("Sidekicks session is not ready");
-      const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking"],
+      const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking", "tasks", "results", "shared"],
         send: ["child", "message"], answer: ["child", "questionId", "answer"], stop: ["child"], status: [] };
       const unexpected = Object.entries(args).filter(([key, value]) => key !== "action" && value !== undefined && !fields[args.action]?.includes(key));
       if (unexpected.length) throw new Error(`${args.action} does not take: ${unexpected.map(([key]) => key).join(", ")}. It takes: ${fields[args.action].join(", ") || "nothing"}.`);
@@ -171,12 +188,31 @@ export default function sidekicks(pi: ExtensionAPI): void {
       switch (args.action) {
         case "launch": {
           const agents = getAgents(ctx);
-          const agent = agents.find((agent) => agent.name === requireText("agent"));
-          if (!agent) throw new Error(`Unknown agent. Available: ${agents.map((agent) => agent.name).join(", ") || "none"}`);
-          const model = args.model ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
-          if (!model) throw new Error("No launch, agent, or parent model is available");
-          const child = await runtime.manager.launch({ agent: agent.name, instructions: agent.instructions, name: args.name,
-            task: requireText("task"), model, thinking: args.thinking ?? agent.thinking ?? pi.getThinkingLevel() }, signal);
+          const resolve = (input: { agent: string; task: string; name?: string; model?: string; thinking?: typeof args.thinking }) => {
+            if (!input.agent.trim() || !input.task.trim()) throw new Error("agent and task must not be blank");
+            const agent = agents.find((agent) => agent.name === input.agent);
+            if (!agent) throw new Error(`Unknown agent. Available: ${agents.map((agent) => agent.name).join(", ") || "none"}`);
+            const model = input.model ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+            if (!model) throw new Error("No launch, agent, or parent model is available");
+            return { agent: agent.name, instructions: agent.instructions, name: input.name, task: input.task,
+              model, thinking: input.thinking ?? agent.thinking ?? pi.getThinkingLevel() };
+          };
+          if (args.tasks) {
+            const conflicts = ["agent", "task", "name", "model", "thinking"].filter((key) => args[key as keyof typeof args] !== undefined);
+            if (conflicts.length) throw new Error(`launch with tasks does not take: ${conflicts.join(", ")}`);
+            const shared = args.shared?.trim() ? `${args.shared}\n\n` : "";
+            const inputs = args.tasks.map((task) => {
+              const input = resolve(task);
+              return { ...input, task: shared + input.task };
+            });
+            const outcomes = await runtime.manager.launchBatch(inputs, args.results, signal);
+            return { content: [{ type: "text", text: outcomes.map(({ child, error }) => `${error ? `Startup failed: ${error}.` : "Launched."} ${describeChild(child)}`).join("\n") }],
+              details: { action: "launch", children: outcomes.map(({ child }) => child), outcomes } satisfies ToolDetails };
+          }
+          const conflicts = ["results", "shared"].filter((key) => args[key as keyof typeof args] !== undefined);
+          if (conflicts.length) throw new Error(`launch without tasks does not take: ${conflicts.join(", ")}`);
+          const child = await runtime.manager.launch(resolve({ agent: requireText("agent"), task: requireText("task"), name: args.name,
+            model: args.model, thinking: args.thinking }), signal);
           return done("Launched. Its result or questions arrive as messages; do not poll.\n", child);
         }
         case "send": return done("Sent.", await runtime.manager.send(requireText("child"), requireText("message"), signal));
@@ -193,6 +229,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
   });
 
   for (const kind of ["question", "result"]) pi.registerMessageRenderer(`sidekicks:${kind}`, (message, options, theme) => renderDelivery(message, options, theme));
+  pi.registerMessageRenderer("sidekicks:group", (message, options, theme) => renderGroup(message, options, theme));
   pi.registerCommand("sidekicks", { description: "Inspect sidekicks without a model turn", handler: async (_args, ctx) => {
     if (!current) return;
     if (ctx.mode === "tui") {

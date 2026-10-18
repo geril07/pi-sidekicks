@@ -8,6 +8,71 @@ import { Manager, type ChildRecord, type ChildSnapshot } from "../src/manager.ts
 
 const cli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
 
+const batchTask = (name: string) => ({ agent: "worker", task: "Return local evidence", name });
+for (const scenario of [
+  { label: "together", launch: { tasks: [batchTask("one"), batchTask("two")] }, deliveries: 1 },
+  { label: "shared", launch: { tasks: [{ ...batchTask("one"), task: "Review runtime" }, { ...batchTask("two"), task: "Review tests" }], shared: "Common instructions" }, deliveries: 1 },
+  { label: "blank shared", launch: { tasks: [batchTask("one"), batchTask("two")], shared: " \n\t" }, deliveries: 1 },
+  { label: "shared without tasks", launch: { agent: "worker", task: "Work", shared: "Common instructions" }, error: /launch without tasks does not take: shared/ },
+  { label: "empty own task with shared", launch: { tasks: [batchTask("one"), { ...batchTask("two"), task: " \n\t" }], shared: "Common instructions" }, error: /agent and task must not be blank/ },
+  { label: "each", launch: { tasks: [batchTask("one"), batchTask("two")], results: "each" }, deliveries: 2 },
+  { label: "unknown agent", launch: { tasks: [batchTask("one"), { ...batchTask("two"), agent: "missing" }] }, error: /Unknown agent/ },
+  { label: "duplicate name", launch: { tasks: [batchTask("one"), batchTask("one")] }, error: /Name already used/ },
+  { label: "capacity", launch: { tasks: Array.from({ length: 65 }, (_, i) => batchTask(`child-${i}`)) }, error: /64 assignments/ },
+  { label: "mixed fields", launch: { tasks: [batchTask("one")], agent: "worker" }, error: /does not take: agent/ },
+  { label: "results without tasks", launch: { agent: "worker", task: "Work", results: "each" }, error: /does not take: results/ },
+]) {
+  test(`real subagent batch API: ${scenario.label}`, { timeout: 30_000 }, async (t) => {
+    const h = await isolated("batch-parent");
+    const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+      "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
+      { cwd: h.dir, env: { ...h.env, SIDEKICKS_TEST_LAUNCH: JSON.stringify(scenario.launch) } });
+    t.after(() => rpc.stop());
+    await rpc.request({ type: "prompt", message: "Launch the requested batch." });
+    const deadline = performance.now() + 15_000;
+    let entries = (await rpc.request({ type: "get_entries" })).entries;
+    while (true) {
+      const notifications = entries.filter((entry) => entry.type === "custom_message" && entry.customType.startsWith("sidekicks:"));
+      const results = entries.filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent");
+      if (scenario.error ? results.length > 0 : notifications.length === scenario.deliveries) break;
+      assert(performance.now() < deadline, "Batch tool or delivery timed out");
+      await delay(20);
+      entries = (await rpc.request({ type: "get_entries" })).entries;
+    }
+    const records = entries.filter((entry) => entry.type === "custom" && entry.customType === "sidekicks:state");
+    const notifications = entries.filter((entry) => entry.type === "custom_message" && entry.customType.startsWith("sidekicks:"));
+    const toolResult = entries.find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent");
+    assert(toolResult?.type === "message" && toolResult.message.role === "toolResult");
+    if (scenario.error) {
+      assert.equal(toolResult.message.isError, true);
+      assert.match(JSON.stringify(toolResult.message.content), scenario.error);
+      assert.equal(records.length, 0, "whole-batch rejection must reserve/start nothing");
+      const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert(calls.every((call) => call.child === "parent"));
+    } else {
+      assert.equal(toolResult.message.isError, false);
+      if (scenario.label === "shared" || scenario.label === "blank shared") {
+        const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+        const prompts = calls.filter((call) => call.child !== "parent").map((call) => call.lastUser);
+        const prefix = scenario.label === "shared" ? "Common instructions\n\n" : "";
+        assert.equal(prompts.length, 2);
+        for (const task of scenario.launch.tasks!) {
+          assert(prompts.some((prompt) => JSON.stringify(prompt).includes(JSON.stringify(`Sidekicks task:\n${prefix}${task.task}`).slice(1, -1))));
+        }
+      }
+      assert.match(JSON.stringify(toolResult.message.content), /one.*two/s);
+      assert.equal(notifications.length, scenario.deliveries);
+      assert(notifications.every((entry) => entry.type === "custom_message" && entry.customType === `sidekicks:${scenario.label === "each" ? "result" : "group"}`));
+      if (scenario.label === "together") {
+        assert(notifications[0].type === "custom_message");
+        assert.match(String(notifications[0].content), /batch of 2 · 2 completed/);
+        assert.equal((String(notifications[0].content).match(/Batch child full result/g) ?? []).length, 2);
+      }
+    }
+    await rpc.request({ type: "new_session" });
+  });
+}
+
 async function isolated(scenario: string) {
   const dir = await mkdtemp("/tmp/opencode/sidekicks-e2e-");
   const agent = join(dir, "agent");

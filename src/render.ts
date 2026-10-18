@@ -1,12 +1,13 @@
 import { getMarkdownTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, MouseRegion, Spacer, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { ChildSnapshot, RunState } from "./manager.ts";
-import { elapsedOf, modelLabel, plain, stateGlyph, stateWord, summary } from "./present.ts";
+import { groupHeadline, elapsedOf, modelLabel, plain, stateGlyph, stateWord, summary } from "./present.ts";
 
 /** Saved with each delivered message so the transcript view never has to parse model-facing text. */
 export interface DeliveryDetails { kind: "question" | "result"; child: string; state: RunState; questionId?: string; blocking?: boolean; elapsed?: string; body: string }
+export interface GroupDetails { kind: "group"; members: { child: string; state: RunState; body: string }[] }
 /** Saved with each tool result for the same reason. */
-export interface ToolDetails { action: string; child?: ChildSnapshot; children?: ChildSnapshot[]; agents?: string[] }
+export interface ToolDetails { action: string; child?: ChildSnapshot; children?: ChildSnapshot[]; agents?: string[]; outcomes?: { child: ChildSnapshot; error?: string }[] }
 
 const COLLAPSED_LINES = 3;
 const oneLine = (value: string, length: number) => {
@@ -19,11 +20,11 @@ const clicked = new WeakMap<object, { byPi: boolean; expanded: boolean }>();
 
 class DeliveryBlock extends Box {
   private readonly message: object;
-  private readonly details: DeliveryDetails;
+  private readonly details: DeliveryDetails | GroupDetails;
   private readonly byPi: boolean;
   private readonly theme: Theme;
 
-  constructor(message: object, details: DeliveryDetails, byPi: boolean, theme: Theme) {
+  constructor(message: object, details: DeliveryDetails | GroupDetails, byPi: boolean, theme: Theme) {
     super(1, 1, (text) => theme.bg("customMessageBg", text));
     this.message = message;
     this.details = details;
@@ -38,6 +39,18 @@ class DeliveryBlock extends Box {
   private rebuild(): void {
     const { theme, details } = this;
     const expanded = this.expanded();
+    if (details.kind === "group") {
+      const content = new Container();
+      content.addChild(new Text(`${theme.fg("customMessageLabel", theme.bold("[sidekick]"))} ${groupHeadline(details.members)}`, 0, 0));
+      for (const member of details.members) {
+        content.addChild(new Spacer(1));
+        content.addChild(new Text(`${theme.bold(plain(member.child))} ${stateWord(theme, member.state)}`, 0, 0));
+        if (expanded) content.addChild(new Markdown(member.body.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, " "), 0, 0, getMarkdownTheme(), { color: (text) => theme.fg("customMessageText", text) }));
+        else content.addChild(new Text(theme.fg("muted", oneLine(member.body, 160)), 0, 0));
+      }
+      this.setContent(content);
+      return;
+    }
     const asks = details.kind === "question";
     const status = asks ? theme.fg("warning", details.blocking ? "asks · paused" : "asks") : stateWord(theme, details.state);
     const title = `${theme.fg("customMessageLabel", theme.bold("[sidekick]"))} ${theme.fg("customMessageText", plain(details.child))} ${status}`
@@ -55,6 +68,10 @@ class DeliveryBlock extends Box {
         if (hidden > 0) content.addChild(new Text(theme.fg("dim", `… ${hidden} more lines (${keyText("app.tools.expand") || "click"} to expand)`), 0, 0));
       }
     }
+    this.setContent(content);
+  }
+
+  private setContent(content: Container): void {
     this.clear();
     this.addChild(new MouseRegion(content, (event) => {
       if (event.type !== "click" || event.button !== "left") return undefined;
@@ -71,9 +88,15 @@ export function renderDelivery(message: { details?: unknown }, options: { expand
   return new DeliveryBlock(message, details, options.expanded, theme);
 }
 
+export function renderGroup(message: { details?: unknown }, options: { expanded: boolean }, theme: Theme): Component | undefined {
+  const details = message.details as GroupDetails | undefined;
+  if (details?.kind !== "group" || !Array.isArray(details.members)) return undefined;
+  return new DeliveryBlock(message, details, options.expanded, theme);
+}
+
 export function renderCall(args: Record<string, unknown>, theme: Theme): Component {
   const text = (key: string) => typeof args[key] === "string" ? args[key] as string : "";
-  const target = text("agent") || text("child");
+  const target = Array.isArray(args.tasks) ? `batch of ${args.tasks.length}` : text("agent") || text("child");
   const body = text("task") || text("message") || text("answer");
   const name = text("agent") && text("name") ? theme.fg("dim", ` as ${plain(text("name"))}`) : "";
   return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", text("action") || "?")}${target ? ` ${theme.fg("customMessageText", plain(target))}` : ""}${name}${body ? theme.fg("dim", `  ${oneLine(body, 100)}`) : ""}`, 0, 0);

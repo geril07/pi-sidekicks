@@ -47,8 +47,8 @@ input.on("line", (line) => {
       prompts++;
       if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify(command)}\n`);
       response({ disposition: "started" });
-      if (mode === "complete" || mode === "settling-race") setImmediate(complete);
-      if (mode === "exit") setImmediate(() => process.exit(0));
+      if (mode === "complete" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
+      if (mode === "exit" || (mode === "batch" && command.message.includes("outcome=exit"))) setImmediate(() => process.exit(0));
       if (mode === "question" && prompts === 1) setImmediate(() => {
         const event = { type: "entry_appended", entry: { type: "custom", customType: "sidekicks:question",
           data: { action: "asked", id: "question-1", text: "Which option?" } } };
@@ -57,7 +57,7 @@ input.on("line", (line) => {
         settled();
       });
       if (mode === "question" && prompts > 1) setImmediate(complete);
-      if (mode === "failure") setImmediate(() => {
+      if (mode === "failure" || (mode === "batch" && command.message.includes("outcome=failure"))) setImmediate(() => {
         emit({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "scripted provider failed" } });
         settled();
       });

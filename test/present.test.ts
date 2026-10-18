@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync } from "node:fs";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
 import { describeTool, type ChildSnapshot } from "../src/manager.ts";
-import { deliveryText, describeChild, formatElapsed, statusText } from "../src/present.ts";
-import { renderCall, renderDelivery, renderResult, type DeliveryDetails } from "../src/render.ts";
+import { groupText, deliveryText, describeChild, formatElapsed, statusText } from "../src/present.ts";
+import { renderGroup, renderCall, renderDelivery, renderResult, type DeliveryDetails } from "../src/render.ts";
 
 const child: ChildSnapshot = { id: "uuid", name: "explorer-1", agent: "explorer", model: "openai/gpt-6", thinking: "high",
   run: { id: "run", state: "running", delivered: false, startedAt: Date.now() - 12_000 }, connected: true, activity: "read src/a.ts", sessionPath: "/c.jsonl" };
@@ -52,4 +53,40 @@ test("transcript renderers show status, bounded previews, and sanitized text", (
   const result = { content: [{ type: "text", text: "ignored" }], details: { action: "launch", child } };
   assert.match(lines(renderResult(result, { expanded: false }, theme, false) as Component)[0], /● explorer-1 explorer gpt-6:high running · 12s/);
   assert.match(lines(renderResult({ content: [{ type: "text", text: "Unknown child: x" }] }, { expanded: false }, theme, true))[0], /Unknown child: x/);
+});
+
+test("group messages contain full held results and short previously reported outcomes", () => {
+  const completed = { ...child, run: { ...child.run, state: "completed" as const, result: "First full result\nsecond line" } };
+  const failed = { ...child, name: "bad", run: { ...child.run, state: "failed" as const, delivered: true, result: "Already delivered error details" } };
+  const stopped = { ...child, name: "stopped", run: { ...child.run, state: "cancelled" as const, delivered: true } };
+  const message = groupText([completed, failed, stopped]);
+  assert.match(message, /batch of 3 · 1 completed · 1 failed · 1 stopped/);
+  assert.match(message, /First full result\nsecond line/);
+  assert.match(message, /Sidekick bad failed \(already reported\)/);
+  assert.match(message, /Sidekick stopped stopped/);
+  assert.doesNotMatch(message, /Already delivered error details/);
+});
+
+test("group renderer has one bounded, sanitized block and expanded Markdown for each member", (t) => {
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = mkdtempSync("/tmp/opencode/sidekicks-present-");
+  t.after(() => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; });
+  initTheme("dark", false);
+  const details = { kind: "group", members: [
+    { child: "one\x07", state: "completed", body: `${"x".repeat(500)}\n**full result**\x1b]52;x\x07` },
+    { child: "two", state: "completed", body: "Second result" },
+    { child: "bad", state: "failed", body: "Already reported." },
+  ] };
+  const collapsed = lines(renderGroup({ details }, { expanded: false }, theme)!, 200);
+  assert.match(collapsed[0], /\[sidekick\] batch of 3 · 2 completed · 1 failed/);
+  assert.equal(collapsed.filter((line) => line.includes("[sidekick]")).length, 1);
+  assert(!collapsed.join("\n").includes("full result"));
+  assert(collapsed.join("\n").includes("…"));
+  const expanded = lines(renderGroup({ details }, { expanded: true }, theme)!, 200).join("\n");
+  assert.match(expanded, /full result/);
+  assert.match(expanded, /Second result/);
+  assert(!expanded.includes("\x07"));
+  assert(!expanded.includes("\x1b"));
+  assert.equal(renderGroup({}, { expanded: false }, theme), undefined);
+  assert.match(lines(renderCall({ action: "launch", tasks: [{}, {}] }, theme))[0], /subagent launch batch of 2/);
 });

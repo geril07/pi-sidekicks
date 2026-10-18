@@ -9,6 +9,7 @@ async function harness(mode = "hold") {
   const directory = await mkdtemp("/tmp/opencode/sidekicks-manager-");
   const records = new Map<string, ChildRecord>();
   const deliveries: { child: ChildSnapshot; kind: string }[] = [];
+  const groups: ChildSnapshot[][] = [];
   const waiters = new Set<() => void>();
   const options: ManagerOptions = {
     ownerSessionId: "parent", directory, cwd: directory, trusted: false,
@@ -16,6 +17,7 @@ async function harness(mode = "hold") {
     env: { ...process.env, SIDEKICKS_FAKE_SCENARIO: mode, SIDEKICKS_FAKE_LOG: join(directory, "prompts.jsonl"), SIDEKICKS_DESCENDANT_PID: join(directory, "descendant.pid") },
     persist: (record) => { records.set(record.id, record); },
     deliver: (child, kind) => { deliveries.push({ child, kind }); for (const wake of waiters) wake(); },
+    deliverGroup: (members) => { groups.push(members); for (const wake of waiters) wake(); },
     changed: () => { for (const wake of waiters) wake(); },
     dialog: async () => undefined,
   };
@@ -28,7 +30,7 @@ async function harness(mode = "hold") {
   });
   const launch = (name = "worker") => manager.launch({ agent: name, instructions: "Do the task", name,
     task: "Work", model: "local/scripted", thinking: "off" });
-  return { manager, options, directory, records, deliveries, waitFor, launch };
+  return { manager, options, directory, records, deliveries, groups, waitFor, launch };
 }
 
 test("launch allows more than three assignments, and stop retains the session identity", async (t) => {
@@ -181,6 +183,20 @@ test("a lock left by dead processes is replaced; live, unreadable, or half-writt
   assert.equal((await h.manager.send(child.id, "Lock written before the child pid existed")).run.state, "running");
 });
 
+test("locks from another boot ignore reused live PIDs; same-boot locks fail closed", async (t) => {
+  const h = await harness();
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  const lock = `${child.sessionPath}.lock`;
+  const owner = JSON.parse(await readFile(lock, "utf8"));
+  assert.equal(owner.bootId, (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
+  await h.manager.stop(child.id);
+  await writeFile(lock, JSON.stringify({ pid: process.pid, bootId: owner.bootId }));
+  await assert.rejects(h.manager.send(child.id, "Same boot"), /locked by a live process/);
+  await writeFile(lock, JSON.stringify({ pid: process.pid, childPid: process.pid, bootId: "previous-boot" }));
+  assert.equal((await h.manager.send(child.id, "After reboot")).run.state, "running");
+});
+
 test("invalid model/thinking and malformed RPC fail startup without keeping a live child", async (t) => {
   const h = await harness();
   const invalid = await harness("invalid");
@@ -229,3 +245,151 @@ test("children get unique handles and are addressable by name", async (t) => {
   assert.equal(stopped.run.state, "cancelled");
   await assert.rejects(h.manager.stop("nobody"), /Unknown child: nobody. Known: worker, worker-2, auditor/);
 });
+
+const assignment = (name: string, outcome = "hold") => ({ agent: "worker", instructions: "Work", name,
+  task: `outcome=${outcome}`, model: "local/scripted", thinking: "off" as const });
+
+for (const results of ["together", "each"] as const) {
+  test(`batch ${results} delivers completed outcomes exactly once`, async (t) => {
+    const h = await harness("batch");
+    t.after(() => h.manager.shutdown());
+    await h.manager.launchBatch([assignment("one", "complete"), assignment("two", "complete")], results);
+    await h.waitFor(() => h.manager.snapshot().every((child) => child.run.delivered));
+    assert.equal(h.deliveries.length, results === "each" ? 2 : 0);
+    assert.equal(h.groups.length, results === "together" ? 1 : 0);
+    if (results === "together") assert.deepEqual(h.groups[0].map((child) => child.name).sort(), ["one", "two"]);
+    h.manager.releaseHeld();
+    assert.equal(h.groups.length, results === "together" ? 1 : 0);
+  });
+}
+
+test("a batch failure is immediate; siblings keep running and later share completed results", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch([assignment("bad", "failure"), assignment("slow"), assignment("done", "complete")]);
+  await h.waitFor(() => h.deliveries.length === 1 && h.manager.snapshot().find((child) => child.name === "done")?.run.state === "completed");
+  assert.equal(h.deliveries[0].child.run.state, "failed");
+  assert.equal(h.manager.snapshot().find((child) => child.name === "slow")?.run.state, "running");
+  assert.equal(h.groups.length, 0);
+  await h.manager.send("slow", "outcome=complete");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.equal(h.deliveries.length, 1);
+  assert.deepEqual(h.groups[0].map((child) => [child.name, child.run.state, child.run.delivered]).sort(),
+    [["bad", "failed", true], ["done", "completed", false], ["slow", "completed", false]]);
+});
+
+for (const held of [false, true]) {
+  test(`stopping remaining grouped members ${held ? "releases held results" : "has no delivery"}`, async (t) => {
+    const h = await harness("batch");
+    t.after(() => h.manager.shutdown());
+    await h.manager.launchBatch([assignment("one", held ? "complete" : "hold"), assignment("two")]);
+    if (held) await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+    else await h.manager.stop("one");
+    await h.manager.stop("two");
+    assert.equal(h.deliveries.length, 0);
+    assert.equal(h.groups.length, held ? 1 : 0);
+    assert(h.manager.snapshot().every((child) => child.run.delivered));
+  });
+}
+
+test("grouped questions remain immediate and waiting members hold the group open", async (t) => {
+  const h = await harness("question");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch([assignment("one"), assignment("two")]);
+  await h.waitFor(() => h.deliveries.length === 2);
+  assert(h.deliveries.every((delivery) => delivery.kind === "question"));
+  await h.manager.answer("one", "question-1", "A");
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  assert.equal(h.manager.snapshot()[1].run.state, "waiting");
+  assert.equal(h.groups.length, 0);
+  await h.manager.answer("two", "question-1", "B");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.equal(h.deliveries.length, 2);
+});
+
+test("grouped process loss is reported immediately without stopping siblings", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch([assignment("lost", "exit"), assignment("other")]);
+  await h.waitFor(() => h.deliveries.length === 1);
+  assert.equal(h.deliveries[0].child.run.state, "interrupted");
+  assert.equal(h.manager.snapshot()[1].run.state, "running");
+  await h.manager.send("other", "outcome=complete");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.equal(h.deliveries.length, 1);
+});
+
+test("send releases an individual held result and leaves its group", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch([assignment("one", "complete"), assignment("two")]);
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  const before = h.manager.snapshot()[0];
+  await h.manager.send("one", "outcome=hold");
+  assert.equal(h.deliveries.length, 1);
+  assert.equal(h.deliveries[0].child.run.id, before.run.id);
+  assert.equal(h.deliveries[0].child.run.state, "completed");
+  assert.equal(h.manager.snapshot()[0].run.groupId, undefined);
+  await h.manager.stop("two");
+  assert.equal(h.groups.length, 0);
+});
+
+test("restore releases held completed results once after runtime activation, without replay", async (t) => {
+  const h = await harness("batch");
+  await h.manager.launchBatch([assignment("one", "complete"), assignment("two")]);
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  const saved = [...h.records.values()];
+  await h.manager.shutdown();
+  const restored = new Manager({ ...h.options, restored: saved });
+  t.after(() => restored.shutdown());
+  assert.equal(h.groups.length, 0);
+  restored.releaseHeld();
+  restored.releaseHeld();
+  assert.equal(h.groups.length, 1);
+  assert.deepEqual(h.groups[0].map((child) => child.run.state), ["completed", "interrupted"]);
+  assert(restored.snapshot().every((child) => child.run.delivered));
+  const again = new Manager({ ...h.options, restored: [...h.records.values()] });
+  t.after(() => again.shutdown());
+  again.releaseHeld();
+  assert.equal(h.groups.length, 1);
+  assert.equal(h.deliveries.length, 0);
+});
+
+test("batch name and capacity validation starts nothing; startup errors remain per-member", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await assert.rejects(h.manager.launchBatch([assignment("same"), assignment("same")]), /already used/);
+  await assert.rejects(h.manager.launchBatch(Array.from({ length: 65 }, (_, i) => assignment(`child-${i}`))), /64 assignments/);
+  assert.equal(h.manager.snapshot().length, 0);
+  await assert.rejects(stat(join(h.directory, "prompts.jsonl")), { code: "ENOENT" });
+  const outcomes = await h.manager.launchBatch([assignment("good", "complete"), { ...assignment("bad"), model: "missing/model" }]);
+  assert.equal(outcomes[0].error, undefined);
+  assert.match(outcomes[1].error!, /exactly one/);
+  await h.waitFor(() => h.groups.length === 1);
+  assert.deepEqual(h.groups[0].map((child) => child.name), ["good"]);
+  assert.equal(h.deliveries.length, 0);
+  await assert.rejects(h.manager.launchBatch([assignment("good"), assignment("new")]), /already used/);
+  assert.equal(h.manager.snapshot().length, 2);
+  await h.manager.launch(assignment("existing"));
+  const before = h.manager.snapshot();
+  await assert.rejects(h.manager.launchBatch(Array.from({ length: 64 }, (_, i) => assignment(`extra-${i}`))), /64 assignments/);
+  assert.deepEqual(h.manager.snapshot(), before, "existing active assignments count against the whole batch reservation");
+});
+
+for (const mode of ["hold", "exit", "complete", "failure"]) {
+  test(`follow-up hint after ${mode} reflects partial-work risk only when interrupted/stopped`, async (t) => {
+    const h = await harness(mode);
+    t.after(() => h.manager.shutdown());
+    const child = await h.launch();
+    if (mode === "hold") await h.manager.stop(child.id);
+    else await h.waitFor(() => h.deliveries.length === 1);
+    if (mode === "exit") await h.waitFor(() => h.manager.snapshot()[0].activity === "detached");
+    await h.manager.send(child.id, "Next assignment");
+    const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const follow = prompts.at(-1).message;
+    if (mode === "hold" || mode === "exit") {
+      assert.match(follow, /^Sidekicks follow-up:\nYour previous run was (stopped|interrupted)\./);
+      assert.match(follow, /partial changes.*Check the current state before repeating anything\./);
+    } else assert.equal(follow, "Sidekicks follow-up:\nNext assignment");
+  });
+}

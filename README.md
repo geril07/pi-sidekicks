@@ -27,7 +27,7 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 
 | Action | Required fields | Behavior |
 |---|---|---|
-| `launch` | `agent`, `task` | Returns after child readiness, not task completion. Optional `name`, `model`, `thinking`. |
+| `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model`, `thinking`. Batch: optional `results`, `shared`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. |
@@ -52,6 +52,33 @@ Nonblocking questions do not prevent ordinary guidance or follow-up. Stop, failu
 process loss, and parent detach cancel unanswered questions; stale/duplicate replies fail.
 An idle child retains unanswered nonblocking questions across ordinary follow-ups.
 
+### Batch launch
+
+Use `subagent` with `action: "launch"` and a nonempty `tasks` array:
+
+```json
+{"action":"launch","tasks":[{"agent":"worker","task":"Review src/manager.ts","name":"runtime"},{"agent":"worker","task":"Review tests","name":"tests"}],"results":"together"}
+```
+
+Each task accepts `agent`, `task`, and optional `name`, `model`, `thinking`.
+Optional `shared` text is prepended to each entry's own `task` with a blank line; whitespace-only `shared` is ignored, and each own task must still be nonblank.
+Do not mix `tasks` with those top-level fields. `results` is valid only with
+`tasks`: `together` (default) holds completed results until every member settles;
+`each` delivers each result separately. Agent/default resolution, names, and capacity
+are checked for the whole batch before any child starts. Members then start
+concurrently; startup failures appear per member in the tool result and are excluded
+from the group.
+
+With `together`, failures, interruptions, and questions arrive immediately; siblings
+keep running. Waiting for an answer still counts as active. Stopping a grouped member
+sends no cancellation message. When all settle, one group message contains all held
+results in full and short status lines for the other members. With no held result,
+there is no group message. Sending new work to a member releases its held result
+individually first, and the new run leaves the group. Reload releases held results
+once after restoring the group; it does not rerun work or replay other notifications.
+Follow-ups after interruption or stop tell the child to check for partial changes
+before repeating work.
+
 ### Human status
 
 The widget below the editor is hidden when the session has no children. Once
@@ -63,8 +90,9 @@ and remains available for progress, pending questions, results, and follow-up.
   start, transcript path), Escape or Up on the first row leaves.
 - Clicking the summary expands/collapses it, and clicking a row toggles its details
   (fullscreen mode only). `/sidekicks` enters the list without a keystroke.
-- Results and questions appear in the transcript as collapsible `[sidekick]` blocks;
-  tool calls render as `subagent <action> <target>`.
+- Results, questions, and batches appear in the transcript as collapsible `[sidekick]` blocks;
+  batch previews are bounded per member; expansion shows each full result as Markdown.
+  Tool calls render as `subagent <action> <target>`.
 
 These actions do not spend a model turn. Down is only claimed when the main editor
 is focused and empty, so drafts, pastes, and dialogs keep their keys.
@@ -135,8 +163,9 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
   loss before settlement is interruption, not success.
 - A session writer lock prevents two parent instances reopening the same child.
   After a hard crash a stale `.jsonl.lock` may remain. Opening the child replaces it
-  only when both recorded PIDs (parent and child) are dead on this machine; an
-  unreadable, half-written, or live-PID lock still refuses. PIDs are per-machine, so
+  when its Linux boot ID differs from the current boot, or both recorded PIDs
+  (parent and child) are dead. If either boot ID is unavailable, use PID checks.
+  Unreadable, half-written, or same-boot live-PID locks still refuse. PIDs are per-machine, so
   two hosts or containers sharing one home directory can misjudge a lock.
   Locks cover this extension; do not manually open a live child in another Pi.
 - Exact-once delivery/model consumption across crashes is not guaranteed. Messages
@@ -165,7 +194,8 @@ Tests use isolated agent directories under `/tmp/opencode`, real Pi RPC processe
 scripted local providers, and a fake RPC peer. No billable model or external MCP
 call is needed. The terminal smoke uses its own named tmux server and checks both
 terminal modes, draft/cursor/paste preservation, unrelated dialogs, summary clicks,
-and child-extension dialogs. It saves text evidence under `/tmp/opencode`.
+child-extension dialogs, and batch message expansion/click collapse. It saves text
+evidence under `/tmp/opencode`.
 
 Before replacing the existing setup, obtain permission for a live provider/MCP
 smoke and test coexistence with the operator's actual extensions.

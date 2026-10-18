@@ -66,6 +66,13 @@ export default function fixture(pi: ExtensionAPI): void {
     log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent",
       lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
       transcript: scenario === "nonblocking" ? JSON.stringify(context.messages) : undefined });
+    if (scenario === "batch-parent") {
+      if (process.env.PI_SIDEKICKS_CHILD) return fauxAssistantMessage(`Batch child full result.\n${"Detail ".repeat(40)}\nEvidence: local scripted provider.`);
+      if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("subagent", {
+        action: "launch", ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH!),
+      }), { stopReason: "toolUse" });
+      return fauxAssistantMessage("FINAL: batch tool response or delivery received.");
+    }
     if (scenario === "mixed-questions" && state.callCount <= 2) {
       return fauxAssistantMessage(fauxToolCall("ask_parent", { question: `Question ${state.callCount}?`, wait: state.callCount === 2 }), { stopReason: "toolUse" });
     }

@@ -64,6 +64,19 @@ export function statusText(children: ChildSnapshot[], agents: Agent[]): string {
   return lines.join("\n");
 }
 
+export function groupHeadline(members: { state: RunState }[]): string {
+  const counts = new Map<RunState, number>();
+  for (const member of members) counts.set(member.state, (counts.get(member.state) ?? 0) + 1);
+  return [`batch of ${members.length}`, ...[...counts].map(([state, count]) => `${count} ${STATES[state].word}`)].join(" · ");
+}
+
+export function groupText(members: ChildSnapshot[]): string {
+  return [groupHeadline(members.map((child) => ({ state: child.run.state }))),
+    ...members.map((child) => child.run.state === "completed" && !child.run.delivered
+      ? deliveryText(child, "result")
+      : `Sidekick ${child.name} ${STATES[child.run.state].word}${child.run.state === "failed" ? " (already reported)" : ""}.`)].join("\n\n");
+}
+
 /** What the parent model reads when a child finishes or asks. The human sees a rendered version of the same message. */
 export function deliveryText(child: ChildSnapshot, kind: "question" | "result", question?: Question, blocking?: boolean): string {
   if (kind === "question") {

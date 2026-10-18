@@ -1,7 +1,7 @@
 # V1 implementation brief
 
 Updated 2026-10-18. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local TypeScript checking, 45 scripted-provider/unit tests, and all three optional
+Local TypeScript checking, 74 scripted-provider/unit tests, and all four optional
 terminal scenarios pass. The operator's real
 provider/MCP combination is not verified, and the extension is not enabled there.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
@@ -59,6 +59,8 @@ while idle, without a new model turn. Framed answer text is message content, not
 an executable command. A stopped/detached child reopens its saved session and
 reapplies its saved agent/model configuration. Model changes require a new child.
 Framing ensures task/guidance/answer text cannot become a leading slash command.
+A new run after interruption or cancellation gets a leading partial-change warning;
+completed/failed follow-ups and running guidance are unchanged.
 
 Use a small raw JSONL transport: public `RpcClient` cannot answer extension UI
 requests. Correlate responses by ID because commands can complete out of order.
@@ -84,6 +86,26 @@ ordinary follow-ups. Replies do not reopen terminal runs. Explicit follow-up is
 needed to act on an idle reply. Failure, stop, process loss, and parent detach cancel
 unanswered questions. Duplicate/stale answers fail; completed outcomes stay unchanged.
 
+Batch launch uses the same tool/action with nonempty `tasks` and optional `results`
+(`together` by default, or `each`). Optional `shared` (tasks only) prepends common
+text and a blank line to each own task; whitespace-only shared text is ignored,
+and each own task must still be nonblank. Top-level agent/task/name/model/thinking cannot
+be mixed with tasks; results requires tasks. Resolve every agent/default, allocate
+unique names using the existing naming rules, and check active + batch capacity
+before launching anything. Startup is concurrent; return structured per-member
+outcomes, excluding startup failures from group membership.
+
+Together members carry one opaque group ID on their current persisted run; no
+separate group registry exists. Hold completed results undelivered, but deliver
+failures/interruptions and questions immediately. Parent stops mark grouped runs
+delivered without a message. Once all current members settle, deliver one
+`sidekicks:group` message with full held results plus short status lines for others;
+no held results means no message. Sending to a held member releases its result
+individually before replacing its run without a group ID. After the runtime becomes
+current, `releaseHeld()` flushes restored held completions once; restored active runs
+are interrupted as before, with no other notification replay. Each-mode batches use
+normal individual delivery, without group IDs or sibling cancellation.
+
 Parent custom entries contain child metadata and latest run outcomes. Child session
 files contain the conversation and question transitions. This is not a database or
 tool replay log. No transcript-receipt reconciliation is implemented in v1.
@@ -96,9 +118,11 @@ become interrupted. Another parent session cannot adopt them.
 
 Stop clears child queues, requests abort, then ends stdin and uses bounded SIGTERM /
 SIGKILL process-group cleanup. Keep transcripts. A crash-stale lock is replaced
-on open only when both recorded PIDs are dead (`removeDeadLock`); unreadable, partial,
-or live-PID locks fail closed. Assumes one host per home directory. No automatic task
-or notification replay.
+on open if its recorded boot ID differs from the current Linux boot ID, otherwise
+only when both recorded PIDs are dead (`removeDeadLock`). Unreadable boot IDs are
+undefined and preserve PID checks; unreadable, partial, or same-boot live-PID locks
+fail closed. Assumes one host per home directory. No automatic task replay; only
+held batch completions are released after restore.
 
 Delivery submission is not a receipt for model consumption. Already submitted Pi
 messages can remain in the owning parent's transcript/queue after reload; stale
@@ -155,7 +179,10 @@ detail lines, and activity text, and drops terminal control characters.
 `present.ts` holds state glyphs/tones, elapsed formatting, and the plain text the
 model reads (child lines, status, delivered question/result). `render.ts` holds the
 transcript views: `[sidekick]` message blocks (details carry the body, so views
-never parse model text), tool `renderCall`/`renderResult`. Pattern source:
+never parse model text), tool `renderCall`/`renderResult`. A batch is one block with
+an outcome-count headline, bounded per-member previews, and full Markdown results
+when expanded; it uses the same click/Pi expansion state and control sanitization.
+Pattern source:
 `.refs/nicobailon/pi-subagents/src/tui/subagent-messages.ts` and `fleet-status.ts`.
 
 Serialize child-extension dialogs through one promise chain. Relay select, confirm,
@@ -220,8 +247,14 @@ Verified locally without a billable model or external MCP call:
   restored interruption, no replay on reload, and owned process-group cleanup.
 - Human confirm/select/input through a real RPC parent; all four dialog types through
   a real TUI parent, including explicit rejection rather than automatic approval.
+- Batch together/each delivery through real Pi, all-or-nothing validation, per-member
+  startup failure, immediate failure/process-loss delivery, questions holding groups,
+  stop/send release behavior, restored held results without duplicate delivery, and
+  bounded/sanitized group rendering. Boot-ID mismatch with a live PID, same-boot
+  refusal, legacy PID-only locks, and partial-change follow-up hints.
 - Fullscreen and regular terminal Down-arrow selection, draft preservation,
-  unrelated dialogs, collapsed-paste submission, mouse toggles, and shutdown cleanup.
+  unrelated dialogs, collapsed-paste submission, mouse toggles, shutdown cleanup,
+  and batch message expansion/click collapse.
 
 Remaining release gate: permission for a real operator provider/MCP smoke, startup
 trust behavior in the intended project, coexistence with the old subagent package,
