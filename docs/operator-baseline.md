@@ -68,7 +68,7 @@ It is not evidence that every Pi foreground API is inherently unsuitable.
 
 The operator has custom Herdr/tmux agent-state integrations and a notifier.
 `herdr-agent-state.ts` includes a patch related to active nicobailon background work.
-A replacement may need a small explicit state event for such consumers.
+pi-sidekicks emits the same `herdr:busy` event for that patch (see the README lifecycle list).
 That is a compatibility question, not permission to reproduce all existing plugins.
 
 Other installed packages include goal mode, web fetch, plan review, and bash timeout.

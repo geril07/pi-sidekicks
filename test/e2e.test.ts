@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -72,6 +72,80 @@ for (const scenario of [
     await rpc.request({ type: "new_session" });
   });
 }
+
+const placed = (extra: object) => ({ agent: "worker", task: "Work", name: "one", ...extra });
+for (const scenario of [
+  { label: "a :thinking suffix on model sets thinking", launch: () => placed({ model: "sidekicks-test/scripted:high" }), child: { model: "sidekicks-test/scripted", thinking: "high" } },
+  { label: "the same level in both places is accepted", launch: () => placed({ model: "sidekicks-test/scripted:high", thinking: "high" }), child: { model: "sidekicks-test/scripted", thinking: "high" } },
+  { label: "a conflicting suffix and thinking is rejected", launch: () => placed({ model: "sidekicks-test/scripted:high", thinking: "low" }), error: /suffix :high conflicts with thinking low/ },
+  { label: "a relative cwd resolves against the parent", launch: () => placed({ cwd: "sub" }), subdir: "sub" },
+  { label: "a missing cwd is rejected before anything starts", launch: () => placed({ cwd: "missing" }), error: /cwd must be an existing directory/ },
+  { label: "one missing cwd rejects the whole batch", launch: () => ({ tasks: [placed({}), placed({ name: "two", cwd: "missing" })] }), error: /cwd must be an existing directory/ },
+]) {
+  test(`real launch: ${scenario.label}`, { timeout: 30_000 }, async (t) => {
+    const h = await isolated("batch-parent");
+    await mkdir(join(h.dir, "sub"));
+    const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+      "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
+      { cwd: h.dir, env: { ...h.env, SIDEKICKS_TEST_LAUNCH: JSON.stringify(scenario.launch()) } });
+    t.after(() => rpc.stop());
+    await rpc.request({ type: "prompt", message: "Launch the requested child." });
+    const deadline = performance.now() + 15_000;
+    let entries = (await rpc.request({ type: "get_entries" })).entries;
+    while (!entries.some((entry) => scenario.error ? entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent"
+      : entry.type === "custom_message" && entry.customType.startsWith("sidekicks:"))) {
+      assert(performance.now() < deadline, "Launch or delivery timed out");
+      await delay(20);
+      entries = (await rpc.request({ type: "get_entries" })).entries;
+    }
+    const records = entries.filter((entry) => entry.type === "custom" && entry.customType === "sidekicks:state");
+    const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    if (scenario.error) {
+      const result = entries.find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent");
+      assert(result?.type === "message" && result.message.role === "toolResult" && result.message.isError);
+      assert.match(JSON.stringify(result.message.content), scenario.error);
+      assert.equal(records.length, 0, "a rejected launch must reserve and start nothing");
+      assert(calls.every((call) => call.child === "parent"));
+      return;
+    }
+    const last = records.at(-1);
+    assert(last?.type === "custom");
+    const child = last.data as ChildRecord;
+    if (scenario.child) assert.deepEqual({ model: child.model, thinking: child.thinking }, scenario.child);
+    if (scenario.subdir) {
+      assert.equal(child.cwd, join(h.dir, scenario.subdir));
+      assert.equal(calls.find((call) => call.child !== "parent")?.cwd, await realpath(join(h.dir, scenario.subdir)));
+    }
+  });
+}
+
+test("herdr:busy stays raised while a child runs after the parent turn ends and drops once the result wake has started", { timeout: 30_000 }, async (t) => {
+  const h = await isolated("batch-parent");
+  const gate = join(h.dir, "release-child");
+  const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+    "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
+    { cwd: h.dir, env: { ...h.env, SIDEKICKS_TEST_GATE: gate,
+      SIDEKICKS_TEST_LAUNCH: JSON.stringify({ agent: "worker", task: "Return local evidence", name: "one" }) } });
+  t.after(() => rpc.stop());
+  const sequence = async () => (await readFile(`${h.log}.events`, "utf8").catch(() => "")).split("\n").filter(Boolean);
+  const waitFor = async (predicate: (sequence: string[]) => boolean) => {
+    const deadline = performance.now() + 15_000;
+    while (!predicate(await sequence())) {
+      assert(performance.now() < deadline, "Expected herdr event sequence timed out");
+      await delay(20);
+    }
+  };
+  await rpc.request({ type: "prompt", message: "Launch one child." });
+  await waitFor((events) => events.includes("busy:true") && events.includes("agent_settled"));
+  await delay(200);
+  assert(!(await sequence()).includes("busy:false"), "a running child must keep the pane busy after the parent settles");
+  await writeFile(gate, "");
+  await waitFor((events) => events.includes("busy:false"));
+  const events = await sequence();
+  assert.deepEqual(events.filter((event) => event.startsWith("busy:")), ["busy:true", "busy:false"]);
+  const wake = events.indexOf("agent_start", events.indexOf("agent_settled"));
+  assert(wake > 0 && events.indexOf("busy:false") > wake, `busy must drop after the wake turn starts: ${events.join(",")}`);
+});
 
 async function isolated(scenario: string) {
   const dir = await mkdtemp("/tmp/opencode/sidekicks-e2e-");

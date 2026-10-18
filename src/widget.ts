@@ -133,6 +133,8 @@ export class StatusWidget implements Component {
     const more = body.filter((line) => line.trim()).length - lines.length;
     const shown = lines.map((line) => style.fg("muted", `     ${plain(line)}`));
     if (more > 0) shown.push(style.fg("dim", `     … ${more} more lines`));
+    if (child.cwd) shown.push(style.fg("dim", `     cwd ${plain(child.cwd)}`));
+    if (child.run.resultFile) shown.push(style.fg("dim", `     ${plain(child.run.resultFile)}`));
     shown.push(style.fg("dim", `     ${plain(child.sessionPath)}`));
     return shown.map((line) => truncateToWidth(line, width));
   }

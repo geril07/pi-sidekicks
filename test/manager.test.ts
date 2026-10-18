@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
+import { deliveryText, describeChild } from "../src/present.ts";
 
 async function harness(mode = "hold") {
   const directory = await mkdtemp("/tmp/opencode/sidekicks-manager-");
@@ -105,8 +106,49 @@ test("provider failures stay failures, and terminal results arrive once", async 
   await h.waitFor(() => h.deliveries.length === 1);
   assert.equal(h.deliveries[0].child.run.state, "failed");
   assert.match(h.deliveries[0].child.run.result!, /scripted provider failed/);
+  assert.match(await readFile(h.deliveries[0].child.run.resultFile!, "utf8"), /state: "failed"[\s\S]*scripted provider failed/);
   await h.manager.stop(h.manager.snapshot()[0].id);
   assert.equal(h.deliveries.length, 1);
+});
+
+test("each finished run writes its full result beside the transcript, and a follow-up writes another", async (t) => {
+  const h = await harness("long-result");
+  t.after(() => h.manager.shutdown());
+  await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  const first = h.deliveries[0].child;
+  const file = join(h.directory, `${first.id}.${first.run.id}.result.md`);
+  assert.equal(first.run.resultFile, file);
+  assert(first.run.result!.endsWith(`[Truncated. Full result: ${file}]`));
+  assert(deliveryText(first, "result").includes(`): ${file}\n`));
+  const text = await readFile(file, "utf8");
+  assert.match(text, /^---\nchild: "worker"\nagent: "worker"\nmodel: "local\/scripted"\nthinking: "off"\nstate: "completed"\nstarted: "\d{4}-[^"]+"\nended: "\d{4}-[^"]+"\ntranscript: "[^"]+\.jsonl"\n---\n\nx{30000}\n$/);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  await h.manager.send("worker", "Continue");
+  await h.waitFor(() => h.deliveries.length === 2);
+  const second = h.deliveries[1].child;
+  assert.notEqual(second.run.id, first.run.id);
+  assert.notEqual(second.run.resultFile, file);
+  assert.equal((await readFile(file, "utf8")).length, text.length, "the earlier run's file stays as written");
+  assert.equal(second.run.endedAt !== undefined && second.run.endedAt >= second.run.startedAt!, true);
+});
+
+test("a child runs where it is told, and announces itself as a subagent child", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const elsewhere = join(h.directory, "elsewhere");
+  await mkdir(elsewhere);
+  const moved = await h.manager.launch({ agent: "reviewer", instructions: "Do the task", name: "moved", task: "Work", model: "local/scripted", thinking: "off", cwd: elsewhere });
+  const home = await h.launch("home");
+  await h.waitFor(() => h.deliveries.length === 2);
+  assert.equal(moved.cwd, elsewhere);
+  assert.equal(home.cwd, undefined, "the parent's own directory is not repeated");
+  assert.match(describeChild(moved), /^moved \(reviewer, scripted:off, cwd .*\/elsewhere\) — /);
+  const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const at = async (path: string) => realpath(path);
+  assert.deepEqual(prompts.map((prompt) => prompt.cwd).sort(), [await at(h.directory), await at(elsewhere)].sort());
+  assert(prompts.every((prompt) => prompt.subagentChild === "1"));
+  assert.deepEqual(prompts.map((prompt) => prompt.subagentAgent).sort(), ["home", "reviewer"]);
 });
 
 test("explicit stop wins a race with final result extraction", async (t) => {

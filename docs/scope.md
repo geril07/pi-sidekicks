@@ -110,7 +110,7 @@ those records. Existing source is evidence of implementation, not user approval.
 | Always-blocking questions, one pending question, no ordinary guidance while pending | Assistant choices, superseded by the correction. `ask_parent.wait` is optional and defaults to `true` to preserve existing calls. `false` permits multiple outstanding questions and normal guidance; blocking pauses still reserve one safe barrier. |
 | Nonblocking late-answer policy | New implementation decision: retain replies in the same conversation without a model turn or reopening the completed assignment. Explicit `send` starts further work. Unanswered nonblocking questions survive normal follow-ups but are cancelled on stop, failure, process loss, or parent detach. |
 | Model/thinking frozen for the conversation | Assistant choice. Original scope required launch overrides and left changes on later runs undecided. Retained for this change, not a permanent ban. |
-| Mandatory predefined role; shared parent cwd; no per-launch cwd | Assistant interface simplifications. Roles were required, but mandatory role selection and shared cwd were not. Retained, not expanded here. |
+| Mandatory predefined role; shared parent cwd | Assistant interface simplifications. Roles were required, but mandatory role selection and shared cwd were not. Role selection is retained. Per-launch `cwd` was added 2026-10-18 at the operator's request, after a session audit found about 12% of nicobailon dispatches targeted a directory other than the session's (mostly sibling worktrees). OpenCode v2 does not offer it: its child sessions must inherit the parent's location. Children also get `PI_SUBAGENT_CHILD=1` and `PI_SUBAGENT_CHILD_AGENT` because the operator's pi-notifier recognises children by them. |
 | Append-only role prompts; ignored legacy settings model pins | Assistant prompt/migration choices. Append versus replace was originally open; legacy compatibility was not required. Retained and disclosed in README. |
 | Children told not to delegate; this package's parent tools suppressed in children | Assistant recursion/scope policy. Nested delegation was only a proposed exclusion. Retained for v1, not a user ban on all delegation tools. |
 | Tool description forbids delegation unless explicitly requested | Coding-agent instructions were copied into product policy without a scope requirement. Removed from the tool description; actual parent instructions still govern delegation. |
@@ -123,7 +123,7 @@ those records. Existing source is evidence of implementation, not user approval.
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task
 timeouts), an 8 MiB RPC-line bound, 8,000-character questions, 100-character names,
-24,000-character result summaries with full transcripts retained, and eight visible
+24,000-character result summaries (the full result is also saved as a per-run `.result.md` file beside the transcript), and eight visible
 widget rows with navigation. Their exact values are assistant-selected safeguards,
 not requirements or consequences of the typical child count. This correction does
 not remove them automatically.

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
@@ -8,7 +8,7 @@ import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { groupId?: string; id: string; state: RunState; question?: Question; result?: string; delivered: boolean; startedAt?: number; endedAt?: number }
+export interface Run { groupId?: string; id: string; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
@@ -16,6 +16,8 @@ export interface ChildRecord {
 }
 export interface ChildSnapshot {
   id: string; name: string; agent: string; model: string; thinking: Thinking;
+  /** Only set when the child works somewhere other than the parent's directory. */
+  cwd?: string;
   run: Run; connected: boolean; activity: string; sessionPath: string;
   questions?: (Question & { runId: string })[];
 }
@@ -116,8 +118,8 @@ export class Manager {
   snapshot(): ChildSnapshot[] { return [...this.children.values()].map((child) => this.view(child)); }
 
   private view(child: Child): ChildSnapshot {
-    const { id, name, agent, model, thinking, run, sessionPath } = child.record;
-    return { id, name, agent, model, thinking, run: structuredClone(run), sessionPath,
+    const { id, name, agent, model, thinking, run, sessionPath, cwd } = child.record;
+    return { id, name, agent, model, thinking, ...(cwd !== this.options.cwd ? { cwd } : {}), run: structuredClone(run), sessionPath,
       connected: !!child.rpc && !child.closing, activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
@@ -150,12 +152,12 @@ export class Manager {
     this.options.changed();
   }
 
-  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking; groupId?: string }, signal?: AbortSignal): Promise<ChildSnapshot> {
+  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking; cwd?: string; groupId?: string }, signal?: AbortSignal): Promise<ChildSnapshot> {
     this.capacity();
     const id = randomUUID();
     const name = this.uniqueName(input.name, input.agent);
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
-      agent: input.agent, instructions: input.instructions, cwd: this.options.cwd,
+      agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
       sessionPath: join(this.options.directory, `${id}.jsonl`), model: input.model, thinking: input.thinking,
       run: { groupId: input.groupId, id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() } });
     this.children.set(id, child);
@@ -282,7 +284,9 @@ export class Manager {
     child.controller = new AbortController();
     child.lastError = undefined;
     const rpc = new RpcConnection({ command: this.options.invocation.command, args }, {
-      cwd: record.cwd, env: { ...(this.options.env ?? process.env), PI_SIDEKICKS_CHILD: record.id },
+      cwd: record.cwd, env: { ...(this.options.env ?? process.env), PI_SIDEKICKS_CHILD: record.id,
+        // pi-notifier recognises children by these names, and would otherwise announce every child as a session.
+        PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: record.agent },
     });
     child.rpc = rpc;
     lockContents = JSON.stringify({ ...writer, childPid: rpc.process.pid });
@@ -403,9 +407,11 @@ export class Manager {
     if (!active(run.state)) return;
     if (!deliver) run.groupId = undefined;
     run.state = state;
+    run.endedAt = Date.now();
     run.question = undefined;
     if (state !== "completed") child.record.questions = [];
-    run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${child.record.sessionPath}]`;
+    run.resultFile = this.saveResult(child.record, result);
+    run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${run.resultFile ?? child.record.sessionPath}]`;
     child.activity = state;
     if (run.groupId && state === "cancelled") run.delivered = true;
     this.commit(child);
@@ -415,6 +421,24 @@ export class Manager {
       this.commit(child);
     }
     this.releaseHeld();
+  }
+
+  /** One readable file per run, beside the transcript. */
+  private saveResult(record: ChildRecord, result: string): string | undefined {
+    const { run } = record;
+    const path = join(this.options.directory, `${record.id}.${run.id}.result.md`);
+    const time = (value?: number) => value === undefined ? "" : new Date(value).toISOString();
+    const header = [["child", record.name], ["agent", record.agent], ["model", record.model], ["thinking", record.thinking],
+      ["state", run.state], ["started", time(run.startedAt)], ["ended", time(run.endedAt)], ["transcript", record.sessionPath]]
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+    try {
+      writeFileSync(`${path}.tmp`, `---\n${header.join("\n")}\n---\n\n${result}\n`, { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+      return path;
+    } catch {
+      // The registry copy and the child transcript still hold the result, so a full disk must not fail the run.
+      return undefined;
+    }
   }
 
   releaseHeld(): void {

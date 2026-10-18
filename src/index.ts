@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
-import { Manager, type ChildRecord, type ChildSnapshot } from "./manager.ts";
+import { Manager, type ChildRecord, type ChildSnapshot, type Thinking } from "./manager.ts";
 import { discoverAgents, thinkingLevels } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
 import { groupText, deliveryText, describeChild, elapsedOf, statusText } from "./present.ts";
@@ -13,13 +13,13 @@ import type { Invocation } from "./rpc.ts";
 const STATE_ENTRY = "sidekicks:state";
 const DESCRIPTION = [
   "Delegate work to asynchronous child agents. Each child is a full Pi session with its own conversation; launch returns as soon as the child is running.",
-  "- launch: agent + task. Write the task so it stands alone (goal, relevant paths, constraints, what to return). Optional name (unique handle), model, thinking; these apply at launch only.",
-  "- launch batch: tasks [{agent, task, name?, model?, thinking?}] instead of top-level launch fields; optional shared text precedes each task with a blank line. Validates all members before starting; results defaults to together (hold completions for one batch message, failures/questions arrive immediately), or each (individual results).",
+  "- launch: agent + task. Write the task so it stands alone (goal, relevant paths, constraints, what to return). Optional name (unique handle), model (a trailing :thinking is accepted), thinking, cwd (the child's working directory, absolute or relative to yours; default yours); these apply at launch only.",
+  "- launch batch: tasks [{agent, task, name?, model?, thinking?, cwd?}] instead of top-level launch fields; optional shared text precedes each task with a blank line. Validates all members before starting; results defaults to together (hold completions for one batch message, failures/questions arrive immediately), or each (individual results).",
   "- send: child + message. Steers a running child; starts a new run in a finished child's existing conversation.",
   "- answer: child + questionId + answer. Replies to a question the child asked.",
   "- stop: child. Ends the work and keeps the conversation.",
   "- status: children and available agents.",
-  "Address a child by its name. Results and questions arrive as messages; do not poll or wait in a loop. Up to 64 children may be active.",
+  "Address a child by its name. Results and questions arrive as messages; do not poll or wait in a loop. Each finished run's result is also saved as a file; its path is in the delivery and in status. Up to 64 children may be active.",
 ].join("\n");
 
 function invocation(): Invocation {
@@ -47,6 +47,26 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
 export default function sidekicks(pi: ExtensionAPI): void {
   if (process.env.PI_SIDEKICKS_CHILD) return;
   let current: { manager: Manager; widget: StatusWidget; ctx: ExtensionContext } | undefined;
+  // Herdr counts herdr:busy events, so emit strictly in pairs. The check runs a tick later so the wake turn
+  // that delivers the last result starts first; otherwise the pane would flash idle between the two.
+  let busy = false;
+  let busyCheck: NodeJS.Timeout | undefined;
+  const syncBusy = () => {
+    busyCheck ??= setTimeout(() => {
+      busyCheck = undefined;
+      emitBusy(current?.manager.snapshot().some((child) => child.run.state === "starting" || child.run.state === "running") ?? false);
+    }, 0);
+  };
+  const emitBusy = (next: boolean) => {
+    if (next === busy) return;
+    busy = next;
+    pi.events.emit("herdr:busy", { active: next });
+  };
+  const releaseBusy = () => {
+    clearTimeout(busyCheck);
+    busyCheck = undefined;
+    emitBusy(false);
+  };
   const getAgents = (ctx: ExtensionContext) => {
     const config = (pi.getSettings() as { sidekicks?: unknown }).sidekicks;
     if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) throw new Error("sidekicks settings must be an object");
@@ -95,7 +115,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       persist: (record) => {
         if (ctx.sessionManager.getSessionId() === ownerSessionId) pi.appendEntry(STATE_ENTRY, record);
       },
-      changed: () => runtime.widget?.refresh(),
+      changed: () => { runtime.widget?.refresh(); syncBusy(); },
       deliverGroup: (members) => {
         if (current !== runtime) return;
         const details: GroupDetails = { kind: "group", members: members.map((child) => ({ child: child.name, state: child.run.state,
@@ -124,12 +144,14 @@ export default function sidekicks(pi: ExtensionAPI): void {
     current = undefined;
     runtime?.widget.dispose();
     await runtime?.manager.shutdown();
+    releaseBusy();
   });
   pi.on("session_tree", async (_event, ctx) => {
     const runtime = current;
     current = undefined;
     runtime?.widget.dispose();
     await runtime?.manager.shutdown(false);
+    releaseBusy();
     start(ctx);
   });
 
@@ -147,14 +169,15 @@ export default function sidekicks(pi: ExtensionAPI): void {
       agent: text("launch: agent definition to use, from the Agents list"),
       task: text("launch: the complete, self-contained assignment"),
       name: text("launch: unique handle for this child; defaults to the agent name", { maxLength: 100 }),
-      model: text("launch: provider/model id; defaults to the agent's model, then the parent's"),
+      model: text("launch: provider/model id, optionally with a :thinking suffix (openai/gpt-6-luna:xhigh); defaults to the agent's model, then the parent's"),
       thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)), { description: "launch: thinking level" })),
+      cwd: text("launch: the child's working directory, absolute or relative to yours; defaults to yours"),
       tasks: Type.Optional(Type.Array(Type.Object({
         agent: Type.String({ minLength: 1, description: "Agent definition to use" }),
         task: Type.String({ minLength: 1, description: "Complete, self-contained assignment" }),
-        name: text("Unique child handle", { maxLength: 100 }), model: text("Model override"),
+        name: text("Unique child handle", { maxLength: 100 }), model: text("Model override, optionally with a :thinking suffix"), cwd: text("Working directory override"),
         thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)))),
-      }), { minItems: 1, description: "launch: batch; mutually exclusive with top-level agent/task/name/model/thinking" })),
+      }), { minItems: 1, description: "launch: batch; mutually exclusive with top-level agent/task/name/model/thinking/cwd" })),
       shared: text("launch with tasks only: common text prepended to each task with a blank line; blank is ignored"),
       results: Type.Optional(Type.Union([Type.Literal("together"), Type.Literal("each")], { description: "launch with tasks only: together (default) groups completions; each delivers individually" })),
       child: text("send/answer/stop: the child's name"),
@@ -174,7 +197,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     async execute(_id, args, signal, _update, ctx) {
       const runtime = current;
       if (!runtime || runtime.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new Error("Sidekicks session is not ready");
-      const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking", "tasks", "results", "shared"],
+      const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking", "cwd", "tasks", "results", "shared"],
         send: ["child", "message"], answer: ["child", "questionId", "answer"], stop: ["child"], status: [] };
       const unexpected = Object.entries(args).filter(([key, value]) => key !== "action" && value !== undefined && !fields[args.action]?.includes(key));
       if (unexpected.length) throw new Error(`${args.action} does not take: ${unexpected.map(([key]) => key).join(", ")}. It takes: ${fields[args.action].join(", ") || "nothing"}.`);
@@ -188,17 +211,23 @@ export default function sidekicks(pi: ExtensionAPI): void {
       switch (args.action) {
         case "launch": {
           const agents = getAgents(ctx);
-          const resolve = (input: { agent: string; task: string; name?: string; model?: string; thinking?: typeof args.thinking }) => {
+          const resolve = (input: { agent: string; task: string; name?: string; model?: string; thinking?: typeof args.thinking; cwd?: string }) => {
             if (!input.agent.trim() || !input.task.trim()) throw new Error("agent and task must not be blank");
             const agent = agents.find((agent) => agent.name === input.agent);
             if (!agent) throw new Error(`Unknown agent. Available: ${agents.map((agent) => agent.name).join(", ") || "none"}`);
-            const model = input.model ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+            // Agent listings show defaults as model:thinking, so models copy that form back here.
+            const suffix = input.model?.lastIndexOf(":") ?? -1;
+            const suffixed = suffix > 0 && thinkingLevels.includes(input.model!.slice(suffix + 1) as Thinking) ? input.model!.slice(suffix + 1) as Thinking : undefined;
+            if (suffixed && input.thinking && suffixed !== input.thinking) throw new Error(`model suffix :${suffixed} conflicts with thinking ${input.thinking}; give one`);
+            const model = (suffixed ? input.model!.slice(0, suffix) : input.model) ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
             if (!model) throw new Error("No launch, agent, or parent model is available");
-            return { agent: agent.name, instructions: agent.instructions, name: input.name, task: input.task,
-              model, thinking: input.thinking ?? agent.thinking ?? pi.getThinkingLevel() };
+            const cwd = input.cwd === undefined ? undefined : resolvePath(ctx.cwd, input.cwd);
+            if (cwd !== undefined && !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`cwd must be an existing directory: ${cwd}`);
+            return { agent: agent.name, instructions: agent.instructions, name: input.name, task: input.task, cwd,
+              model, thinking: input.thinking ?? suffixed ?? agent.thinking ?? pi.getThinkingLevel() };
           };
           if (args.tasks) {
-            const conflicts = ["agent", "task", "name", "model", "thinking"].filter((key) => args[key as keyof typeof args] !== undefined);
+            const conflicts = ["agent", "task", "name", "model", "thinking", "cwd"].filter((key) => args[key as keyof typeof args] !== undefined);
             if (conflicts.length) throw new Error(`launch with tasks does not take: ${conflicts.join(", ")}`);
             const shared = args.shared?.trim() ? `${args.shared}\n\n` : "";
             const inputs = args.tasks.map((task) => {
@@ -212,7 +241,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
           const conflicts = ["results", "shared"].filter((key) => args[key as keyof typeof args] !== undefined);
           if (conflicts.length) throw new Error(`launch without tasks does not take: ${conflicts.join(", ")}`);
           const child = await runtime.manager.launch(resolve({ agent: requireText("agent"), task: requireText("task"), name: args.name,
-            model: args.model, thinking: args.thinking }), signal);
+            model: args.model, thinking: args.thinking, cwd: args.cwd }), signal);
           return done("Launched. Its result or questions arrive as messages; do not poll.\n", child);
         }
         case "send": return done("Sent.", await runtime.manager.send(requireText("child"), requireText("message"), signal));

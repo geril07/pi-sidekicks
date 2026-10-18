@@ -38,16 +38,16 @@ input.on("line", (line) => {
     }
     case "get_last_assistant_text": {
       if (mode === "settling-race") setTimeout(() => response({ text: "done" }), 2000);
-      else response({ text: "done" });
+      else response({ text: mode === "long-result" ? "x".repeat(30_000) : "done" });
       break;
     }
     case "clear_queue": response({ steering: [], followUp: [] }); break;
     case "abort": emit({ type: "agent_settled", aborted: true }); response(); break;
     case "prompt": {
       prompts++;
-      if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify(command)}\n`);
+      if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);
       response({ disposition: "started" });
-      if (mode === "complete" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
+      if (mode === "complete" || mode === "long-result" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
       if (mode === "exit" || (mode === "batch" && command.message.includes("outcome=exit"))) setImmediate(() => process.exit(0));
       if (mode === "question" && prompts === 1) setImmediate(() => {
         const event = { type: "entry_appended", entry: { type: "custom", customType: "sidekicks:question",

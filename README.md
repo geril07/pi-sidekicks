@@ -27,7 +27,7 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 
 | Action | Required fields | Behavior |
 |---|---|---|
-| `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model`, `thinking`. Batch: optional `results`, `shared`. |
+| `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. Batch: tasks take the same optional fields; optional `results`, `shared`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. |
@@ -153,6 +153,14 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 
 - Each child has its own saved Pi conversation under Pi's user-data directory.
   Small registry records are stored in the owning parent's session, not a database.
+- Every finished run (completed, failed, stopped or interrupted) also writes its full
+  result to `<child-id>.<run-id>.result.md` beside the transcript, mode 0600, with
+  front matter (child, agent, model, state, times, transcript path). Delivered
+  results and `status` lines for finished children name this file (labelled as the final
+  answer only, apart from the whole-session transcript), and a result cut at 24,000
+  characters points to it. The
+  write is best effort: if it fails, the run still finishes and the cut result points
+  to the transcript. Nothing deletes these files.
 - The fixed ceiling is 64 active assignments; excess work is rejected, not queued.
   Idle processes remain alive and do not consume assignment slots. Each child is a
   full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
@@ -171,14 +179,27 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 - Exact-once delivery/model consumption across crashes is not guaranteed. Messages
   already submitted to Pi may remain in the owning parent's transcript/queue after
   reload; stale answers are rejected. Registry recovery requires a saved parent session.
-- Children share the working directory. There is no sandbox, worktree isolation,
+- Children work in the parent's directory unless launched with `cwd` (absolute, or relative
+  to the parent's; it must be an existing directory, and one bad entry rejects a whole
+  batch). A child outside the parent's directory shows `cwd <path>` in status and details. The
+  child keeps that directory when reopened. Agent definitions are still discovered from the
+  parent's directory. There is no sandbox, tool-managed worktree isolation,
   daemon, nested-sidekicks runtime, transcript viewer, or durable tool replay.
 - Child extension confirm/select/input dialogs are relayed to the human. Multiline
   editor dialogs use a cancellable overlay with a TUI parent; with an RPC parent
   they are explicitly cancelled with a warning. RPC cannot embed arbitrary custom TUIs.
-- Project trust is not bypassed. Untrusted parents pass `--no-approve` to children.
+- Project trust is not bypassed. Untrusted parents pass `--no-approve` to children. A trusted
+  parent passes no flag, so Pi decides for the child's own directory by its usual order:
+  extensions, a saved decision in `trust.json`, then `defaultProjectTrust`. Children run
+  without a prompt, so with `defaultProjectTrust: "ask"` they skip project-local resources
+  (`.pi/mcp.json`, extensions) unless a saved decision covers the directory; `"always"` loads them.
   Other installed delegation tools remain visible; the recursion guard covers this
   extension, not every package in the operator's setup.
+- While any child is starting or running, the parent emits `herdr:busy` on `pi.events`
+  (`{ active }`, strictly paired), so a Herdr Pi integration that counts it keeps the
+  pane working after the parent turn ends. A child waiting on a question does not
+  count; its question wakes the parent. Upstream Herdr ignores this event: the
+  operator's patched `herdr-agent-state.ts` consumes it, and a Herdr reinstall removes it.
 - Graceful cleanup interrupts tools and terminates owned process groups. Arbitrary
   descendants after parent SIGKILL, or tools that escape their group, are not guaranteed.
 

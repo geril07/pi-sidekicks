@@ -55,7 +55,8 @@ export function describeChild(child: ChildSnapshot): string {
   const detail = run.question ? `asks ${run.question.id}: ${preview(run.question.text, 160)}`
     : isActive(run.state) ? child.connected ? child.activity : "detached" : preview(run.result ?? "", 160);
   const questions = child.questions?.length ? `; ${child.questions.length} open non-blocking question(s): ${child.questions.map((q) => q.id).join(", ")}` : "";
-  return `${child.name} (${child.agent}, ${modelLabel(child)}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${detail ? `: ${detail}` : ""}${questions}`;
+  const file = !isActive(run.state) && run.resultFile ? ` (result file: ${run.resultFile})` : "";
+  return `${child.name} (${child.agent}, ${modelLabel(child)}${child.cwd ? `, cwd ${child.cwd}` : ""}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${detail ? `: ${detail}` : ""}${file}${questions}`;
 }
 
 export function statusText(children: ChildSnapshot[], agents: Agent[]): string {
@@ -86,5 +87,7 @@ export function deliveryText(child: ChildSnapshot, kind: "question" | "result", 
   }
   const elapsed = elapsedOf(child.run);
   return [`Sidekick ${child.name} ${STATES[child.run.state].word}${elapsed ? ` after ${elapsed}` : ""}.`, "",
-    child.run.result ?? "(no result)", "", `Transcript: ${child.sessionPath}`].join("\n");
+    child.run.result ?? "(no result)", "",
+    ...(child.run.resultFile ? [`Result file (the final answer only; read this, not the transcript): ${child.run.resultFile}`] : []),
+    `Transcript (the whole child session, large; read it only to audit the child's steps): ${child.sessionPath}`].join("\n");
 }

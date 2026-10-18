@@ -23,6 +23,12 @@ export default function fixture(pi: ExtensionAPI): void {
     });
   });
   pi.on("session_shutdown", () => { unsubscribe?.(); });
+  if (!process.env.PI_SIDEKICKS_CHILD) {
+    const record = (event: string) => appendFileSync(`${process.env.SIDEKICKS_TEST_LOG!}.events`, `${event}\n`);
+    pi.events.on("herdr:busy", (data) => record(`busy:${(data as { active: boolean }).active}`));
+    pi.on("agent_start", () => record("agent_start"));
+    pi.on("agent_settled", () => record("agent_settled"));
+  }
   let queued = false;
   let continuation = false;
   const answered = new Set<string>();
@@ -63,10 +69,13 @@ export default function fixture(pi: ExtensionAPI): void {
     },
   });
   const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
-    log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent",
+    log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent", cwd: process.cwd(),
       lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
       transcript: scenario === "nonblocking" ? JSON.stringify(context.messages) : undefined });
     if (scenario === "batch-parent") {
+      if (process.env.PI_SIDEKICKS_CHILD && process.env.SIDEKICKS_TEST_GATE) {
+        while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10);
+      }
       if (process.env.PI_SIDEKICKS_CHILD) return fauxAssistantMessage(`Batch child full result.\n${"Detail ".repeat(40)}\nEvidence: local scripted provider.`);
       if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("subagent", {
         action: "launch", ...JSON.parse(process.env.SIDEKICKS_TEST_LAUNCH!),

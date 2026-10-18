@@ -34,6 +34,16 @@ test("model-facing text names the child and tells the parent how to reply", () =
   assert.match(statusText([child], [{ name: "explorer", description: "d", instructions: "" }]), /Children:\n- explorer-1.*\nAgents: explorer/);
 });
 
+test("the parent is told which file holds the answer and which holds the whole session", () => {
+  const done = { ...child, run: { ...child.run, state: "completed" as const, endedAt: Date.now(), result: "Found it.", resultFile: "/c.result.md" } };
+  const delivery = deliveryText(done, "result");
+  assert.match(delivery, /^Result file \(the final answer only; read this, not the transcript\): \/c\.result\.md$/m);
+  assert.match(delivery, /^Transcript \(the whole child session, large; read it only to audit the child's steps\): \/c\.jsonl$/m);
+  assert.match(describeChild(done), /: Found it\. \(result file: \/c\.result\.md\)$/);
+  assert.doesNotMatch(describeChild({ ...child, run: { ...child.run, resultFile: "/stale.result.md" } }), /result file/, "an active run has no result yet");
+  assert.doesNotMatch(deliveryText({ ...done, run: { ...done.run, resultFile: undefined } }, "result"), /Result file/, "no file, no claim about one");
+});
+
 test("transcript renderers show status, bounded previews, and sanitized text", () => {
   const body = ["one", "two", "three", "four", "five\x1b]52;x\x07"].join("\n");
   const details: DeliveryDetails = { kind: "result", child: "explorer-1", state: "completed", elapsed: "12s", body };
