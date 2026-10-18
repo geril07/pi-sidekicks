@@ -54,6 +54,30 @@ export function describeTool(name: string, args: unknown): string {
   return oneLine(key ? `${name} ${record[key] as string}` : name).slice(0, 160);
 }
 
+const pidAlive = (pid: unknown) => {
+  if (!Number.isInteger(pid)) return true;
+  try { process.kill(pid as number, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+/**
+ * Removes a lock only when both recorded processes are provably gone. Anything unreadable or
+ * ambiguous counts as live: two writers on one transcript is worse than a refused resume.
+ * PIDs are per-machine, so this assumes the lock was written on this host.
+ */
+function removeDeadLock(lock: string): boolean {
+  let contents: string;
+  try { contents = readFileSync(lock, "utf8"); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  let owner: { pid?: unknown; childPid?: unknown };
+  try { owner = JSON.parse(contents); } catch { return false; }
+  if (!owner || typeof owner !== "object" || pidAlive(owner.pid) || (owner.childPid !== undefined && pidAlive(owner.childPid))) return false;
+  // Re-read so a lock another parent just replaced is not removed.
+  if (readFileSync(lock, "utf8") !== contents) return false;
+  unlinkSync(lock);
+  return true;
+}
+
 export class Manager {
   private options: ManagerOptions;
   private children = new Map<string, Child>();
@@ -215,8 +239,14 @@ export class Manager {
     let fd: number;
     try { fd = openSync(lock, "wx", 0o600); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Child session is locked: ${lock}. Verify its owner is gone before removing a stale lock.`);
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (!removeDeadLock(lock)) throw error;
+        fd = openSync(lock, "wx", 0o600);
+      } catch (retry) {
+        if ((retry as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Child session is locked by a live process: ${lock}`);
+        throw retry;
+      }
     }
     const writer = { pid: process.pid, token: randomUUID(), owner: this.options.ownerSessionId };
     let lockContents = JSON.stringify(writer);

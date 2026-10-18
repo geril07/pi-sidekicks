@@ -116,7 +116,7 @@ those records. Existing source is evidence of implementation, not user approval.
 | Tool description forbids delegation unless explicitly requested | Coding-agent instructions were copied into product policy without a scope requirement. Removed from the tool description; actual parent instructions still govern delegation. |
 | Parent and child tools are model-only | Assistant execution-interface choice, not a user prohibition on codemode/scripts. Retained. |
 | Stop closes the process; reload/new/resume/fork/tree stop all children | Assistant lifecycle decisions. Original scope asked for explicit tested behavior, not these exact policies. Retained. |
-| No launch queue, cross-parent adoption, or automatic stale-lock recovery | Assistant simplifications, not recorded user requirements. Retained fail-closed ownership and explicit continuation. |
+| No launch queue or cross-parent adoption | Assistant simplifications, not recorded user requirements. Retained. Stale-lock recovery was added 2026-10-18 at the operator's request, limited to locks whose recorded PIDs are dead. |
 | Python terminal driver | Assistant convenience only. Replaced with TypeScript and Node built-ins; tmux coverage stays optional. |
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task

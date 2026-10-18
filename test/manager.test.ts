@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
@@ -158,6 +159,26 @@ test("a second Pi instance cannot become a concurrent writer", async (t) => {
   t.after(() => other.shutdown());
   await assert.rejects(other.send(child.id, "Do not duplicate"), /session is locked/);
   assert.equal(h.manager.snapshot()[0].run.state, "running");
+});
+
+test("a lock left by dead processes is replaced; live, unreadable, or half-written locks still refuse", async (t) => {
+  const h = await harness();
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.manager.stop(child.id);
+  const lock = `${child.sessionPath}.lock`;
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  for (const contents of [JSON.stringify({ pid: process.pid, childPid: dead }), JSON.stringify({ pid: dead, childPid: process.pid }), "", "{not json", JSON.stringify({ token: "no pids" })]) {
+    await writeFile(lock, contents);
+    await assert.rejects(h.manager.send(child.id, "Blocked"), /locked by a live process/, contents);
+  }
+  await writeFile(lock, JSON.stringify({ pid: dead, childPid: dead }));
+  const resumed = await h.manager.send(child.id, "Resume after crash");
+  assert.equal(resumed.run.state, "running");
+  assert.equal(resumed.sessionPath, child.sessionPath);
+  await h.manager.stop(child.id);
+  await writeFile(lock, JSON.stringify({ pid: dead }));
+  assert.equal((await h.manager.send(child.id, "Lock written before the child pid existed")).run.state, "running");
 });
 
 test("invalid model/thinking and malformed RPC fail startup without keeping a live child", async (t) => {

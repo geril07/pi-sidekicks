@@ -95,8 +95,10 @@ branch. Returning to the owning session restores detached records; unresolved ru
 become interrupted. Another parent session cannot adopt them.
 
 Stop clears child queues, requests abort, then ends stdin and uses bounded SIGTERM /
-SIGKILL process-group cleanup. Keep transcripts. Crash-stale locks fail closed and
-require explicit inspection/removal. No automatic task or notification replay.
+SIGKILL process-group cleanup. Keep transcripts. A crash-stale lock is replaced
+on open only when both recorded PIDs are dead (`removeDeadLock`); unreadable, partial,
+or live-PID locks fail closed. Assumes one host per home directory. No automatic task
+or notification replay.
 
 Delivery submission is not a receipt for model consumption. Already submitted Pi
 messages can remain in the owning parent's transcript/queue after reload; stale

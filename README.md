@@ -134,9 +134,10 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 - Stop/cancellation is not rollback. Effects may already have happened. Process
   loss before settlement is interruption, not success.
 - A session writer lock prevents two parent instances reopening the same child.
-  After a hard crash a stale `.jsonl.lock` may remain: inspect its recorded PID and
-  verify the owner and child are gone before removing that specific lock. Recovery
-  is deliberately fail-closed, not automatic.
+  After a hard crash a stale `.jsonl.lock` may remain. Opening the child replaces it
+  only when both recorded PIDs (parent and child) are dead on this machine; an
+  unreadable, half-written, or live-PID lock still refuses. PIDs are per-machine, so
+  two hosts or containers sharing one home directory can misjudge a lock.
   Locks cover this extension; do not manually open a live child in another Pi.
 - Exact-once delivery/model consumption across crashes is not guaranteed. Messages
   already submitted to Pi may remain in the owning parent's transcript/queue after
