@@ -189,7 +189,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       return { descriptions: { subagent: `${DESCRIPTION}\n\nAgents:\n${agents || "none; add Markdown definitions to the configured sidekicks.agentsDir or default sidekicks/ folder"}` } };
     },
     renderCall: (args, theme) => renderCall(args, theme),
-    renderResult: (result, options, theme, context) => renderResult(result as Parameters<typeof renderResult>[0], options, theme, context.isError),
+    renderResult: (result, options, theme, context) => renderResult(result as Parameters<typeof renderResult>[0], options, theme, context),
     async execute(_id, args, signal, _update, ctx) {
       const runtime = current;
       if (!runtime || runtime.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new Error("Sidekicks session is not ready");

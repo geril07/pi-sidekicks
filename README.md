@@ -97,7 +97,11 @@ and remains available for follow-up. Questions and results arrive as transcript 
   (fullscreen mode only). `/sidekicks` enters the list without a keystroke.
 - Results, questions, and batches appear in the transcript as collapsible `[sidekick]` blocks;
   batch previews are bounded per member; expansion shows each full result as Markdown.
-  Tool calls render as `subagent <action> <target>`.
+  Tool calls render as `subagent <action> <target>`, with no prompt text. Under launch, send,
+  and answer rows, a line shows `name agent model` (no state or time, which would go stale; a
+  final state such as `stopped` is shown) and then the prompt you wrote: three wrapped rows
+  collapsed, full Markdown when expanded (click the row in fullscreen mode, or the Pi expand key).
+  A batch lists its members, each with its own prompt when expanded. `status` rows keep state and time.
 
 These actions do not spend a model turn. Down is only claimed when the main editor
 is focused and empty, so drafts, pastes, and dialogs keep their keys.

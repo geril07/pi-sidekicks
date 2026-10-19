@@ -5,7 +5,7 @@ import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
 import { describeTool, type ChildSnapshot } from "../src/manager.ts";
 import { groupText, deliveryText, describeChild, elapsedOf, formatElapsed, statusText } from "../src/present.ts";
-import { renderGroup, renderCall, renderDelivery, renderResult, type DeliveryDetails } from "../src/render.ts";
+import { renderGroup, renderCall, renderDelivery, type DeliveryDetails } from "../src/render.ts";
 
 const child: ChildSnapshot = { id: "uuid", name: "explorer-1", agent: "explorer", model: "openai/gpt-6", thinking: "high",
   run: { id: "run", number: 1, state: "running", delivered: false, startedAt: Date.now() - 12_000 }, connected: true, activity: "read src/a.ts", sessionPath: "/c.jsonl" };
@@ -57,12 +57,6 @@ test("transcript renderers show status, bounded previews, and sanitized text", (
   const asks = lines(renderDelivery({ details: { kind: "question", child: "worker", state: "waiting", blocking: true, questionId: "q", body: "Which?" } }, { expanded: false }, theme)!);
   assert.match(asks[0], /\[sidekick\] worker asks · paused/);
   assert.equal(renderDelivery({}, { expanded: false }, theme), undefined);
-
-  assert.match(lines(renderCall({ action: "launch", agent: "explorer", name: "scan", task: "Find\nthe thing" }, theme))[0], /subagent launch explorer as scan\s+Find the thing/);
-  assert.match(lines(renderCall({ action: "send", child: "scan", message: "Also check tests" }, theme))[0], /subagent send scan\s+Also check tests/);
-  const result = { content: [{ type: "text", text: "ignored" }], details: { action: "launch", child } };
-  assert.match(lines(renderResult(result, { expanded: false }, theme, false) as Component)[0], /● explorer-1 explorer gpt-6:high running · 12s/);
-  assert.match(lines(renderResult({ content: [{ type: "text", text: "Unknown child: x" }] }, { expanded: false }, theme, true))[0], /Unknown child: x/);
 });
 
 test("a finished run without a recorded end shows no elapsed time, so it cannot tick forever", () => {

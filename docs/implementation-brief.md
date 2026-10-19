@@ -190,6 +190,14 @@ transcript views: `[sidekick]` message blocks (details carry the body, so views
 never parse model text), tool `renderCall`/`renderResult`. A batch is one block with
 an outcome-count headline, bounded per-member previews, and full Markdown results
 when expanded; it uses the same click/Pi expansion state and control sanitization.
+The tool-call header is `subagent <action> <target>` without the prompt. The launch/send/answer/stop
+result row is `name agent model`: it is a snapshot taken when the tool returned, so it shows no
+glyph, elapsed time, or live state word, only a final state (`stopped`, `completed`, `failed`). Under it
+is the parent's prompt from `context.args`: three rows wrapped to the width plus a hidden-row hint, or
+Markdown when expanded; an error result keeps its text above the prompt. A batch result lists members
+(with `startup failed: <first line>` for a failed start) and shows each full prompt (`shared` plus the
+member's task) when expanded. Expansion is Pi's own tool-row state (click in fullscreen, Ctrl+O); no
+custom handler. `status` keeps its state and elapsed summary.
 Pattern source:
 `.refs/nicobailon/pi-subagents/src/tui/subagent-messages.ts` and `fleet-status.ts`.
 
