@@ -120,12 +120,13 @@ those records. Existing source is evidence of implementation, not user approval.
 | Stop closes the process; reload/new/resume/fork/tree stop all children | Assistant lifecycle decisions. Original scope asked for explicit tested behavior, not these exact policies. Retained. |
 | No launch queue or cross-parent adoption | Assistant simplifications, not recorded user requirements. Retained. Stale-lock recovery was added 2026-10-18 at the operator's request, limited to locks whose recorded PIDs are dead. The agreed boot-ID correction also replaces locks from an earlier known Linux boot, even if a PID was reused; unknown boot IDs keep PID checks. |
 | Batch launch and delivery | Agreed extension of the existing launch action: tasks plus together (default) or each delivery. Validate the whole batch before concurrent startup; derive membership from group IDs on current runs, hold completions, report failures/questions immediately, suppress grouped stop notices, and release held results on explicit follow-up or restore. No scheduler, shared labels, auto-cancellation, or extra tools. |
+| Child storage layout, prompt files, message labels | Assistant choices (one folder per parent session with flat UUID-named files; result files with front matter; a three-paragraph child briefing; `Sidekicks task:` labels). Changed 2026-10-19 at the operator's request, without compatibility with the old layout: one folder per child (`session.jsonl`, `task-N.md`, plain `result-N.md` for completed runs only), the system-prompt file dropped (passed inline), a one-sentence briefing, and short `Task:`/`Guidance:`/`Follow-up:` labels kept only as the leading-slash guard. |
 | Follow-up after interruption/stop | Agreed partial-change warning before the new assignment; no automatic rerun or rollback. |
 | Python terminal driver | Assistant convenience only. Replaced with TypeScript and Node built-ins; tmux coverage stays optional. |
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task
 timeouts), an 8 MiB RPC-line bound, 8,000-character questions, 100-character names,
-24,000-character result summaries (the full result is also saved as a per-run `.result.md` file beside the transcript), and ten visible
+24,000-character result summaries (the full result of a completed run is also saved as `result-N.md` in the child's own folder), and ten visible
 widget rows with navigation. Their exact values are assistant-selected safeguards,
 not requirements or consequences of the typical child count. This correction does
 not remove them automatically.

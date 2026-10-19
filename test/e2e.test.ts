@@ -57,7 +57,7 @@ for (const scenario of [
         const prefix = scenario.label === "shared" ? "Common instructions\n\n" : "";
         assert.equal(prompts.length, 2);
         for (const task of scenario.launch.tasks!) {
-          assert(prompts.some((prompt) => JSON.stringify(prompt).includes(JSON.stringify(`Sidekicks task:\n${prefix}${task.task}`).slice(1, -1))));
+          assert(prompts.some((prompt) => JSON.stringify(prompt).includes(JSON.stringify(`Task:\n${prefix}${task.task}`).slice(1, -1))));
         }
       }
       assert.match(JSON.stringify(toolResult.message.content), /one.*two/s);
@@ -301,7 +301,8 @@ test(`real parent extension launches, receives a question, answers, and gets com
   assert.equal(child.thinking, "low");
   if (scenario === "nonblocking-parent") assert.equal(child.instructions.trim(), "Custom configured instructions.");
   const transcript = await readFile(child.sessionPath, "utf8");
-  assert.match(transcript, /Sidekicks answer to/);
+  if (scenario === "nonblocking-parent") assert.match(transcript, /Custom configured instructions\.\\n\\nYour final message is your result/, "the inline system prompt reaches the child");
+  assert.match(transcript, /Answer to \w+:/);
   assert.match(transcript, /"action":"answered"/);
   const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(calls.filter((record) => record.child === child.id && record.call).length, 2);

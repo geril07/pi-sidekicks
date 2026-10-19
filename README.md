@@ -90,7 +90,7 @@ and remains available for follow-up. Questions and results arrive as transcript 
   failure). No tool calls or prompt text. Live children come first, in launch order;
   finished ones follow, newest first. Ten rows show at once, and Up/Down scrolls the
   rest (`↑ N more`, `↓ N more`).
-- Up/Down (or j/k) selects, Enter toggles the row's storage folder (transcript and
+- Up/Down (or j/k) selects, Enter toggles the row's own folder (transcript, prompt and
   result files), Escape or Up on the first row leaves and collapses the list;
   any other key does too and still reaches the editor.
 - Clicking the summary expands/collapses it, and clicking a row toggles its details
@@ -156,16 +156,29 @@ model/thinking inherit the parent; move pins manually if wanted. No files are re
 These are current implementation policies, not permanent product requirements.
 See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 
-- Each child has its own saved Pi conversation under Pi's user-data directory.
+- Each child has its own folder under Pi's user-data directory,
+  `~/.pi/agent/sidekicks/<child-id>/`, which holds everything about that child:
+
+  ```text
+  session.jsonl       Pi's saved conversation (the whole child session)
+  session.jsonl.lock  writer lock, present while a process has the child open
+  task-N.md           the exact prompt run N started with (label included)
+  result-N.md         the final answer of completed run N, plain text
+  ```
+
   Small registry records are stored in the owning parent's session, not a database.
-- Every finished run (completed, failed, stopped or interrupted) also writes its full
-  result to `<child-id>.<run-id>.result.md` beside the transcript, mode 0600, with
-  front matter (child, agent, model, state, times, transcript path). Delivered
-  results and `status` lines for finished children name this file (labelled as the final
-  answer only, apart from the whole-session transcript), and a result cut at 24,000
-  characters points to it. The
-  write is best effort: if it fails, the run still finishes and the cut result points
-  to the transcript. Nothing deletes these files.
+  A blocking answer or running guidance is not a new run, so it has no task file.
+- A completed run writes its full result to `result-N.md` (mode 0600, no front matter,
+  so the file can be moved or passed on as it is). Failed, stopped and interrupted runs
+  have no result file; their short status text is in the delivery. Delivered results and
+  `status` lines for completed children name the file (labelled as the final answer
+  only, apart from the whole-session transcript), and a result cut at 24,000
+  characters points to it. Task and result writes are best effort: if one fails, the
+  run still finishes and a cut result points to the transcript. Nothing deletes these files.
+- A parent's text reaches the child with a short label (`Task:`, `Guidance:`, `Follow-up:`,
+  `Answer to <id>:`) because Pi runs a prompt that starts with `/` as a command or skill.
+  The child's system prompt gets the agent body plus one line saying that its final
+  message is the result; it is passed inline, not as a file.
 - The fixed ceiling is 64 active assignments; excess work is rejected, not queued.
   Idle processes remain alive and do not consume assignment slots. Each child is a
   full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
@@ -175,7 +188,7 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 - Stop/cancellation is not rollback. Effects may already have happened. Process
   loss before settlement is interruption, not success.
 - A session writer lock prevents two parent instances reopening the same child.
-  After a hard crash a stale `.jsonl.lock` may remain. Opening the child replaces it
+  After a hard crash a stale `session.jsonl.lock` may remain. Opening the child replaces it
   when its Linux boot ID differs from the current boot, or both recorded PIDs
   (parent and child) are dead. If either boot ID is unavailable, use PID checks.
   Unreadable, half-written, or same-boot live-PID locks still refuse. PIDs are per-machine, so

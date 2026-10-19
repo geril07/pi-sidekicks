@@ -40,15 +40,17 @@ claim that 64 full Pi processes have been validated. Typical usage is not a limi
    `getSettings()` effective configuration; when set it replaces both defaults.
    Resolve relative paths from parent cwd and expand `~/`. Invalid/missing overrides
    fail rather than falling back. No CLI flag or separate settings loader is added.
-2. Reserve an assignment slot and acquire an exclusive child-session writer lock.
-   Write its agent definition body to a private file under Pi user data.
-3. Start the parent's Pi CLI with `--mode rpc`, explicit `--session`, appended role
-   file, and explicit `-e src/child.ts`. Inherit the environment and cwd. For an
+2. Reserve an assignment slot, create the child's folder `<agentDir>/sidekicks/<child-id>/`,
+   and acquire an exclusive writer lock (`session.jsonl.lock`) there. The folder holds
+   `session.jsonl`, `task-N.md` (the exact prompt that started run N) and `result-N.md`
+   (plain final text of completed run N; no other state writes one).
+3. Start the parent's Pi CLI with `--mode rpc`, explicit `--session`, an inline
+   `--append-system-prompt` (agent body plus a one-sentence briefing), and explicit `-e src/child.ts`. Inherit the environment and cwd. For an
    untrusted parent, add `--no-approve`; do not bypass trust with `--approve`.
 4. Query the child's live catalog, select the exact model/thinking, and verify
    effective state and session path before prompting. Unsupported choices fail.
 5. The parent tool is `subagent`; launch selects the definition with `agent`.
-   Submit a framed task and return after acceptance, not completion. Startup errors
+   Submit a labelled task and return after acceptance, not completion. Startup errors
    return directly; uncertainty after submission is interruption, not proof of failure.
 
 `send` steers running work or starts a new run in the same conversation. A blocking
@@ -58,7 +60,7 @@ and `deliverAs: "steer"`: append at a safe boundary while running, or immediatel
 while idle, without a new model turn. Framed answer text is message content, not
 an executable command. A stopped/detached child reopens its saved session and
 reapplies its saved agent/model configuration. Model changes require a new child.
-Framing ensures task/guidance/answer text cannot become a leading slash command.
+Labels (`Task:`, `Guidance:`, `Follow-up:`, `Answer to <id>:`) ensure parent text cannot become a leading slash command; Pi runs such a prompt as an extension command, skill, or template.
 A new run after interruption or cancellation gets a leading partial-change warning;
 completed/failed follow-ups and running guidance are unchanged.
 

@@ -8,7 +8,7 @@ import { groupText, deliveryText, describeChild, elapsedOf, formatElapsed, statu
 import { renderGroup, renderCall, renderDelivery, renderResult, type DeliveryDetails } from "../src/render.ts";
 
 const child: ChildSnapshot = { id: "uuid", name: "explorer-1", agent: "explorer", model: "openai/gpt-6", thinking: "high",
-  run: { id: "run", state: "running", delivered: false, startedAt: Date.now() - 12_000 }, connected: true, activity: "read src/a.ts", sessionPath: "/c.jsonl" };
+  run: { id: "run", number: 1, state: "running", delivered: false, startedAt: Date.now() - 12_000 }, connected: true, activity: "read src/a.ts", sessionPath: "/c.jsonl" };
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
 const lines = (component: Component, width = 100) => component.render(width).map((line) => stripTerminalSequences(line).trimEnd()).filter(Boolean);
 
@@ -67,9 +67,9 @@ test("transcript renderers show status, bounded previews, and sanitized text", (
 
 test("a finished run without a recorded end shows no elapsed time, so it cannot tick forever", () => {
   const started = Date.now() - 90_000;
-  assert.equal(elapsedOf({ id: "r", state: "completed", delivered: true, startedAt: started }), undefined);
-  assert.equal(elapsedOf({ id: "r", state: "completed", delivered: true, startedAt: started, endedAt: started + 5_000 }), "5s");
-  assert.equal(elapsedOf({ id: "r", state: "running", delivered: false, startedAt: started }), "1m30s");
+  assert.equal(elapsedOf({ id: "r", number: 1, state: "completed", delivered: true, startedAt: started }), undefined);
+  assert.equal(elapsedOf({ id: "r", number: 1, state: "completed", delivered: true, startedAt: started, endedAt: started + 5_000 }), "5s");
+  assert.equal(elapsedOf({ id: "r", number: 1, state: "running", delivered: false, startedAt: started }), "1m30s");
 });
 
 test("group messages contain full held results and short previously reported outcomes", () => {

@@ -6,7 +6,7 @@ import { StatusWidget } from "../src/widget.ts";
 import type { ChildSnapshot } from "../src/manager.ts";
 
 const child = (id: string): ChildSnapshot => ({ id, name: `worker-${id}`, agent: "worker", model: "local/model", thinking: "low",
-  run: { id: `run-${id}`, state: "running", delivered: false, startedAt: Date.now() - 65_000 }, connected: true, activity: "read src/a.ts", sessionPath: `/store/child-${id}.jsonl` });
+  run: { id: `run-${id}`, number: 1, state: "running", delivered: false, startedAt: Date.now() - 65_000 }, connected: true, activity: "read src/a.ts", sessionPath: `/store/child-${id}/session.jsonl` });
 
 test("widget is hidden without children and summarizes states once they exist", () => {
   const children: ChildSnapshot[] = [];
@@ -46,7 +46,7 @@ test("rows show name, agent, model, state and elapsed time; a failure keeps its 
   assert.deepEqual(widget.handleMouse({ type: "click", button: "left", y: 2 } as TuiMouseEvent), { handled: true });
   const detailed = widget.render(120);
   assert.equal(detailed.length, 5, "one folder line");
-  assert.match(detailed[3], /^\s+\/store$/);
+  assert.match(detailed[3], /^\s+\/store\/child-\w+$/, "the row's own folder, not a shared one");
   assert(!detailed.join("\n").includes("line one"));
   widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent);
   assert.equal(widget.render(120).length, 1);
@@ -54,7 +54,7 @@ test("rows show name, agent, model, state and elapsed time; a failure keeps its 
 
 test("live children come first in launch order, finished ones follow newest first, and ten rows fit before scrolling", () => {
   const at = (id: string, state: "running" | "waiting" | "completed" | "failed", ended?: number): ChildSnapshot => ({ ...child(id), name: id,
-    run: { id: `run-${id}`, state, delivered: false, startedAt: Date.now() - 100_000, ...(ended ? { endedAt: Date.now() - ended } : {}) } });
+    run: { id: `run-${id}`, number: 1, state, delivered: false, startedAt: Date.now() - 100_000, ...(ended ? { endedAt: Date.now() - ended } : {}) } });
   const names = (lines: string[]) => lines.slice(1).map((line) => line.match(/\b(d\d+|a\d+|r\d+)\b/)?.[1]);
   const children = [at("d1", "completed", 5000), at("d2", "failed", 3000), at("d3", "completed", 9000),
     at("r1", "running"), at("a1", "waiting"), at("r2", "running")];

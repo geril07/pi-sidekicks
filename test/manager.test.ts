@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
 import { deliveryText, describeChild } from "../src/present.ts";
@@ -108,31 +108,48 @@ test("provider failures stay failures, and terminal results arrive once", async 
   await h.waitFor(() => h.deliveries.length === 1);
   assert.equal(h.deliveries[0].child.run.state, "failed");
   assert.match(h.deliveries[0].child.run.result!, /scripted provider failed/);
-  assert.match(await readFile(h.deliveries[0].child.run.resultFile!, "utf8"), /state: "failed"[\s\S]*scripted provider failed/);
+  assert.equal(h.deliveries[0].child.run.resultFile, undefined, "only a completed run has a result file");
   await h.manager.stop(h.manager.snapshot()[0].id);
   assert.equal(h.deliveries.length, 1);
 });
 
-test("each finished run writes its full result beside the transcript, and a follow-up writes another", async (t) => {
+test("a completed run writes its full result as plain text in the child's folder, and a follow-up writes another", async (t) => {
   const h = await harness("long-result");
   t.after(() => h.manager.shutdown());
   await h.launch();
   await h.waitFor(() => h.deliveries.length === 1);
   const first = h.deliveries[0].child;
-  const file = join(h.directory, `${first.id}.${first.run.id}.result.md`);
+  const folder = dirname(first.sessionPath);
+  assert.equal(folder, join(h.directory, first.id));
+  const file = join(folder, "result-1.md");
   assert.equal(first.run.resultFile, file);
   assert(first.run.result!.endsWith(`[Truncated. Full result: ${file}]`));
   assert(deliveryText(first, "result").includes(`): ${file}\n`));
   const text = await readFile(file, "utf8");
-  assert.match(text, /^---\nchild: "worker"\nagent: "worker"\nmodel: "local\/scripted"\nthinking: "off"\nstate: "completed"\nstarted: "\d{4}-[^"]+"\nended: "\d{4}-[^"]+"\ntranscript: "[^"]+\.jsonl"\n---\n\nx{30000}\n$/);
+  assert.equal(text, `${"x".repeat(30000)}\n`);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   await h.manager.send("worker", "Continue");
   await h.waitFor(() => h.deliveries.length === 2);
   const second = h.deliveries[1].child;
   assert.notEqual(second.run.id, first.run.id);
-  assert.notEqual(second.run.resultFile, file);
-  assert.equal((await readFile(file, "utf8")).length, text.length, "the earlier run's file stays as written");
+  assert.equal(second.run.resultFile, join(folder, "result-2.md"));
+  assert.equal(await readFile(file, "utf8"), text, "the earlier run's file stays as written");
   assert.equal(second.run.endedAt !== undefined && second.run.endedAt >= second.run.startedAt!, true);
+});
+
+test("each run's prompt is saved exactly as the child received it, labelled so a leading slash stays text", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const child = await h.manager.launch({ agent: "w", instructions: "", name: "w", task: "/not-a-command", model: "local/scripted", thinking: "off" });
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.manager.send(child.id, "/again");
+  await h.waitFor(() => h.deliveries.length === 2);
+  const sent = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line).message);
+  assert.deepEqual(sent, ["Task:\n/not-a-command", "Follow-up:\n/again"]);
+  const folder = dirname(child.sessionPath);
+  assert.equal(await readFile(join(folder, "task-1.md"), "utf8"), `${sent[0]}\n`);
+  assert.equal(await readFile(join(folder, "task-2.md"), "utf8"), `${sent[1]}\n`);
+  assert.deepEqual((await readdir(folder)).sort(), ["result-1.md", "result-2.md", "session.jsonl.lock", "task-1.md", "task-2.md"]);
 });
 
 test("a child runs where it is told, and announces itself as a subagent child", async (t) => {
@@ -165,16 +182,19 @@ test("a child whose working directory was removed fails with a clear error and l
   const after = h.manager.snapshot()[0];
   assert.equal(after.run.state, "failed");
   assert.match(after.run.result!, /Working directory no longer exists/);
-  assert.deepEqual((await readdir(h.directory)).filter((name) => name.endsWith(".lock")), []);
+  const locks = async () => (await readdir(h.directory, { recursive: true })).filter((name) => name.endsWith(".lock"));
+  assert.deepEqual(await locks(), []);
   await assert.rejects(h.manager.launch({ agent: "x", instructions: "Do the task", name: "x", task: "Work", model: "local/scripted", thinking: "off", cwd: gone }), /Working directory no longer exists/);
-  assert.deepEqual((await readdir(h.directory)).filter((name) => name.endsWith(".lock")), []);
+  assert.deepEqual(await locks(), []);
 });
 
 test("a result file that cannot be written does not fail the run; the cut result points to the transcript", { skip: process.getuid?.() === 0 }, async (t) => {
   const h = await harness("long-result");
-  t.after(async () => { await chmod(h.directory, 0o700); await h.manager.shutdown(); });
-  await h.manager.launch({ agent: "w", instructions: "Do the task", name: "w", task: "Work", model: "local/scripted", thinking: "off" });
-  await chmod(h.directory, 0o500);
+  let folder = h.directory;
+  t.after(async () => { await chmod(folder, 0o700); await h.manager.shutdown(); });
+  const child = await h.manager.launch({ agent: "w", instructions: "Do the task", name: "w", task: "Work", model: "local/scripted", thinking: "off" });
+  folder = dirname(child.sessionPath);
+  await chmod(folder, 0o500);
   await h.waitFor(() => h.deliveries.length === 1);
   const done = h.deliveries[0].child;
   assert.equal(done.run.state, "completed");
@@ -473,8 +493,8 @@ for (const mode of ["hold", "exit", "complete", "failure"]) {
     const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     const follow = prompts.at(-1).message;
     if (mode === "hold" || mode === "exit") {
-      assert.match(follow, /^Sidekicks follow-up:\nYour previous run was (stopped|interrupted)\./);
+      assert.match(follow, /^Follow-up:\nYour previous run was (stopped|interrupted)\./);
       assert.match(follow, /partial changes.*Check the current state before repeating anything\./);
-    } else assert.equal(follow, "Sidekicks follow-up:\nNext assignment");
+    } else assert.equal(follow, "Follow-up:\nNext assignment");
   });
 }

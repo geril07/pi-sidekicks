@@ -15,7 +15,7 @@ export default function childExtension(pi: ExtensionAPI): void {
     handler: async (args) => {
       const { id, text } = JSON.parse(args) as { id: string; text: string };
       if (typeof id !== "string" || typeof text !== "string") throw new Error("Invalid answer");
-      pi.sendMessage({ customType: "sidekicks:answer", content: `Sidekicks answer to ${id}:\n${text}`,
+      pi.sendMessage({ customType: "sidekicks:answer", content: `Answer to ${id}:\n${text}`,
         display: true, details: { questionId: id } }, { triggerTurn: false, deliverAs: "steer" });
       pi.appendEntry(QUESTION_ENTRY, { action: "answered", id });
     },
@@ -23,7 +23,7 @@ export default function childExtension(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", (event) => {
     if (pending) {
-      const answered = event.messageType === "user" && event.prompt.startsWith(`Sidekicks answer to ${pending.id}:\n`);
+      const answered = event.messageType === "user" && event.prompt.startsWith(`Answer to ${pending.id}:\n`);
       pi.appendEntry(QUESTION_ENTRY, { action: answered ? "answered" : "cancelled", id: pending.id });
     }
     reserved = undefined;
@@ -56,7 +56,7 @@ export default function childExtension(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "ask_parent", label: "Ask parent", exposure: "model-only",
-    description: "Ask the parent a question. wait defaults to true: call directly, alone, and pause until answered. Set wait:false to ask and continue; replies enter this conversation without restarting idle work.",
+    description: "Ask the parent a question only when blocked on something only the parent can decide; do not reconfirm an adequate task. wait defaults to true: call directly, alone, and pause until answered. Set wait:false to ask and continue; replies enter this conversation without restarting idle work.",
     parameters: Type.Object({ question: Type.String({ minLength: 1, maxLength: 8000 }), wait: Type.Optional(Type.Boolean()) }),
     async execute(toolCallId, { question, wait = true }) {
       if (!wait) {

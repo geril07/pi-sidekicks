@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
@@ -8,7 +8,7 @@ import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { groupId?: string; id: string; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number }
+export interface Run { groupId?: string; id: string; /** 1-based position in the child's conversation; names the run's task and result files. */ number: number; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
@@ -42,12 +42,9 @@ const active = (state: RunState) => state === "starting" || state === "running" 
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
 const STOPPED = "Stopped by parent.";
 const DETACHED = "Parent session detached. Continue explicitly; no automatic replay; previous external effects may be unknown.";
-const CHILD_BRIEFING = [
-  "You are a sidekick: a child agent working for a parent agent. Messages that start with \"Sidekicks task:\" are your assignment; \"guidance\", \"follow-up\" and \"answer\" messages also come from the parent.",
-  "Your final message is returned to the parent as your result, and the parent sees nothing else you did. Make it self-contained: what you did or found, evidence (paths, line numbers, commands), and what is still open.",
-  "If you are blocked on something only the parent can decide, call ask_parent (wait:true pauses until answered, wait:false asks while you continue). Do not ask to reconfirm an adequate task. Do not delegate to other agents.",
-].join("\n");
-export const frame = (kind: string, text: string) => `Sidekicks ${kind}:\n${text}`;
+const CHILD_BRIEFING = "Your final message is your result for the parent, who sees nothing else you did: make it self-contained, with evidence (paths, line numbers, commands) and what is still open. Do not delegate to other agents.";
+/** A leading "/" would run a Pi command or skill in the child, so every parent text gets a label first. */
+export const frame = (kind: string, text: string) => `${kind}:\n${text}`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const argKeys = ["path", "file_path", "command", "pattern", "query", "url", "agent", "action"];
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -101,7 +98,7 @@ export class Manager {
     mkdirSync(options.directory, { recursive: true, mode: 0o700 });
     for (const saved of options.restored ?? []) {
       if (saved.ownerSessionId !== options.ownerSessionId || !/^[\da-f-]{36}$/.test(saved.id)) continue;
-      if (saved.sessionPath !== join(options.directory, `${saved.id}.jsonl`)) continue;
+      if (saved.sessionPath !== join(options.directory, saved.id, "session.jsonl")) continue;
       const record = structuredClone(saved);
       if (active(record.run.state)) {
         record.run = { ...record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
@@ -158,13 +155,16 @@ export class Manager {
     this.capacity();
     const id = randomUUID();
     const name = this.uniqueName(input.name, input.agent);
+    mkdirSync(join(this.options.directory, id), { mode: 0o700 });
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
-      sessionPath: join(this.options.directory, `${id}.jsonl`), model: input.model, thinking: input.thinking,
-      run: { groupId: input.groupId, id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() } });
+      sessionPath: join(this.options.directory, id, "session.jsonl"), model: input.model, thinking: input.thinking,
+      run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now() } });
     this.children.set(id, child);
     this.commit(child);
-    await this.start(child, frame("task", input.task), signal);
+    const prompt = frame("Task", input.task);
+    this.saveText(child.record, "task-1.md", prompt);
+    await this.start(child, prompt, signal);
     return this.view(child);
   }
 
@@ -176,7 +176,7 @@ export class Manager {
       child.operation = true;
       try {
         signal?.throwIfAborted();
-        const accepted = await child.rpc.request({ type: "prompt", message: frame("guidance", message), streamingBehavior: "steer" });
+        const accepted = await child.rpc.request({ type: "prompt", message: frame("Guidance", message), streamingBehavior: "steer" });
         if (accepted.disposition === "handled") throw new Error("A child extension consumed the guidance instead of delivering it.");
       } finally { child.operation = false; }
     } else {
@@ -190,11 +190,13 @@ export class Manager {
       if (previous.state === "interrupted" || previous.state === "cancelled") {
         message = `Your previous run was ${previous.state === "cancelled" ? "stopped" : "interrupted"}. You may have made partial changes. Check the current state before repeating anything.\n${message}`;
       }
-      child.record.run = { id: randomUUID(), state: "starting", delivered: false, startedAt: Date.now() };
+      child.record.run = { id: randomUUID(), number: previous.number + 1, state: "starting", delivered: false, startedAt: Date.now() };
       this.releaseHeld();
       child.lastError = undefined;
       this.commit(child);
-      await this.start(child, frame("follow-up", message), signal);
+      const prompt = frame("Follow-up", message);
+      this.saveText(child.record, `task-${child.record.run.number}.md`, prompt);
+      await this.start(child, prompt, signal);
     }
     return this.view(child);
   }
@@ -222,7 +224,7 @@ export class Manager {
     run.state = "starting";
     run.delivered = false;
     this.commit(child);
-    await this.start(child, frame(`answer to ${questionId}`, answer), signal);
+    await this.start(child, frame(`Answer to ${questionId}`, answer), signal);
     return this.view(child);
   }
 
@@ -279,10 +281,8 @@ export class Manager {
     };
     try { writeFileSync(fd, lockContents); }
     finally { closeSync(fd); }
-    const promptPath = join(this.options.directory, `${record.id}.agent.md`);
-    writeFileSync(promptPath, `${record.instructions.trim()}\n\n${CHILD_BRIEFING}`.trim(), { mode: 0o600 });
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
-      "--append-system-prompt", promptPath, "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];
+      "--append-system-prompt", `${record.instructions.trim()}\n\n${CHILD_BRIEFING}`.trim(), "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];
     if (!this.options.trusted) args.push("--no-approve");
     child.controller = new AbortController();
     child.lastError = undefined;
@@ -419,7 +419,7 @@ export class Manager {
     run.endedAt = Date.now();
     run.question = undefined;
     if (state !== "completed") child.record.questions = [];
-    run.resultFile = this.saveResult(child.record, result);
+    run.resultFile = state === "completed" ? this.saveText(child.record, `result-${run.number}.md`, result) : undefined;
     run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${run.resultFile ?? child.record.sessionPath}]`;
     child.activity = state;
     this.commit(child);
@@ -431,20 +431,15 @@ export class Manager {
     this.releaseHeld();
   }
 
-  /** One readable file per run, beside the transcript. */
-  private saveResult(record: ChildRecord, result: string): string | undefined {
-    const { run } = record;
-    const path = join(this.options.directory, `${record.id}.${run.id}.result.md`);
-    const time = (value?: number) => value === undefined ? "" : new Date(value).toISOString();
-    const header = [["child", record.name], ["agent", record.agent], ["model", record.model], ["thinking", record.thinking],
-      ["state", run.state], ["started", time(run.startedAt)], ["ended", time(run.endedAt)], ["transcript", record.sessionPath]]
-      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+  /** Readable copies of a run's prompt and result, beside the transcript in the child's folder. */
+  private saveText(record: ChildRecord, name: string, text: string): string | undefined {
+    const path = join(dirname(record.sessionPath), name);
     try {
-      writeFileSync(`${path}.tmp`, `---\n${header.join("\n")}\n---\n\n${result}\n`, { mode: 0o600 });
+      writeFileSync(`${path}.tmp`, `${text}\n`, { mode: 0o600 });
       renameSync(`${path}.tmp`, path);
       return path;
     } catch {
-      // The registry copy and the child transcript still hold the result, so a full disk must not fail the run.
+      // The registry copy and the child transcript still hold the text, so a full disk must not fail the run.
       return undefined;
     }
   }

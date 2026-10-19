@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { Type } from "typebox";
@@ -19,7 +18,7 @@ const DESCRIPTION = [
   "- answer: child + questionId + answer. Replies to a question the child asked.",
   "- stop: child. Ends the work and keeps the conversation.",
   "- status: children and available agents.",
-  "Address a child by its name. Results and questions arrive as messages; do not poll or wait in a loop. Each finished run's result is also saved as a file; its path is in the delivery and in status. Up to 64 children may be active.",
+  "Address a child by its name. Results and questions arrive as messages; do not poll or wait in a loop. Each completed run's result is also saved as a file; its path is in the delivery and in status. Up to 64 children may be active.",
 ].join("\n");
 
 function invocation(): Invocation {
@@ -38,7 +37,7 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
       || typeof record.instructions !== "string" || typeof record.sessionPath !== "string"
       || typeof record.name !== "string" || typeof record.agent !== "string" || typeof record.cwd !== "string"
       || typeof record.model !== "string" || !thinkingLevels.includes(record.thinking)
-      || !record.run || typeof record.run.id !== "string" || typeof record.run.state !== "string") continue;
+      || !record.run || typeof record.run.id !== "string" || !Number.isInteger(record.run.number) || typeof record.run.state !== "string") continue;
     records.set(record.id, record);
   }
   return [...records.values()];
@@ -75,7 +74,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
 
   const start = (ctx: ExtensionContext) => {
     const ownerSessionId = ctx.sessionManager.getSessionId();
-    const directory = join(getAgentDir(), "sidekicks", createHash("sha256").update(ownerSessionId).digest("hex").slice(0, 24));
+    const directory = join(getAgentDir(), "sidekicks");
     let dialogTail: Promise<unknown> = Promise.resolve();
     const runtime = { manager: undefined as unknown as Manager, widget: undefined as unknown as StatusWidget, ctx };
     const dialog = (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal): Promise<RpcExtensionUIResponse | undefined> => {
