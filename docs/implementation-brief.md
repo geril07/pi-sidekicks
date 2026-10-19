@@ -40,7 +40,14 @@ claim that 64 full Pi processes have been validated. Typical usage is not a limi
    `getSettings()` effective configuration; when set it replaces both defaults.
    Resolve relative paths from parent cwd and expand `~/`. Invalid/missing overrides
    fail rather than falling back. No CLI flag or separate settings loader is added.
-2. Reserve an assignment slot, create the child's folder `<agentDir>/sidekicks/<child-id>/`,
+   Definitions are scanned once per `session_start` (startup, reload, new, resume, fork) into
+   the runtime; `prepareLoadout`, `launch`, `status` and `/sidekicks` read that snapshot and
+   `session_tree` reuses it. Pi re-runs `prepareLoadout` before every model request, and a
+   changed description is appended to the transcript as a `toolsAdded` redefinition and
+   can invalidate the provider's cached prefix, so the list must not change mid-session. A bad
+   definition file is skipped with a single `ctx.ui.notify` warning listing path and reason;
+   only an unusable folder or setting (the whole scan) is an error.
+2. Reserve an assignment slot, create the child's folder `<agentDir>/sidekick-sessions/<child-id>/`,
    and acquire an exclusive writer lock (`session.jsonl.lock`) there. The folder holds
    `session.jsonl`, `task-N.md` (the exact prompt that started run N) and `result-N.md`
    (plain final text of completed run N; no other state writes one).

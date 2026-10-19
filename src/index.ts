@@ -3,7 +3,7 @@ import { basename, join, resolve as resolvePath } from "node:path";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import { Manager, type ChildRecord, type ChildSnapshot, type Thinking } from "./manager.ts";
-import { discoverAgents, thinkingLevels } from "./agents.ts";
+import { discoverAgents, thinkingLevels, type Agent, type AgentProblem } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
 import { groupText, deliveryText, describeChild, elapsedOf, statusText } from "./present.ts";
 import { renderCall, renderDelivery, renderGroup, renderResult, type GroupDetails, type DeliveryDetails, type ToolDetails } from "./render.ts";
@@ -28,6 +28,9 @@ function invocation(): Invocation {
   return { command: "pi", args: [] };
 }
 
+/** What the definition folders held when the session started; `error` means a folder or setting was unusable. */
+interface Definitions { agents: Agent[]; problems: AgentProblem[]; error?: string }
+
 function restored(ctx: ExtensionContext): ChildRecord[] {
   const records = new Map<string, ChildRecord>();
   for (const entry of ctx.sessionManager.getBranch()) {
@@ -45,7 +48,7 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
 
 export default function sidekicks(pi: ExtensionAPI): void {
   if (process.env.PI_SIDEKICKS_CHILD) return;
-  let current: { manager: Manager; widget: StatusWidget; ctx: ExtensionContext } | undefined;
+  let current: { manager: Manager; widget: StatusWidget; ctx: ExtensionContext; definitions: Definitions } | undefined;
   // Herdr counts herdr:busy events, so emit strictly in pairs. The check runs a tick later so the wake turn
   // that delivers the last result starts first; otherwise the pane would flash idle between the two.
   let busy = false;
@@ -66,17 +69,34 @@ export default function sidekicks(pi: ExtensionAPI): void {
     busyCheck = undefined;
     emitBusy(false);
   };
-  const getAgents = (ctx: ExtensionContext) => {
-    const config = (pi.getSettings() as { sidekicks?: unknown }).sidekicks;
-    if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) throw new Error("sidekicks settings must be an object");
-    return discoverAgents(ctx.cwd, ctx.isProjectTrusted(), { agentsDir: (config as { agentsDir?: unknown } | undefined)?.agentsDir });
+  // Read once per session start (and so on /reload): the tool description carries the list, and a description that
+  // changes mid-session is a changed tool declaration, which can cost the provider's prompt cache.
+  const loadDefinitions = (ctx: ExtensionContext): Definitions => {
+    let definitions: Definitions;
+    try {
+      const config = (pi.getSettings() as { sidekicks?: unknown }).sidekicks;
+      if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) throw new Error("sidekicks settings must be an object");
+      definitions = discoverAgents(ctx.cwd, ctx.isProjectTrusted(), { agentsDir: (config as { agentsDir?: unknown } | undefined)?.agentsDir });
+    } catch (error) {
+      definitions = { agents: [], problems: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    if (definitions.error) ctx.ui.notify(`sidekicks: ${definitions.error}`, "error");
+    else if (definitions.problems.length) {
+      const count = definitions.problems.length;
+      ctx.ui.notify(`sidekicks: skipped ${count} invalid agent definition${count > 1 ? "s" : ""}. Fix and /reload.\n${definitions.problems.map(({ path, reason }) => `${path}: ${reason}`).join("\n")}`, "warning");
+    }
+    return definitions;
+  };
+  const agentsOf = ({ definitions }: { definitions: Definitions }) => {
+    if (definitions.error) throw new Error(definitions.error);
+    return definitions.agents;
   };
 
-  const start = (ctx: ExtensionContext) => {
+  const start = (ctx: ExtensionContext, definitions: Definitions) => {
     const ownerSessionId = ctx.sessionManager.getSessionId();
-    const directory = join(getAgentDir(), "sidekicks");
+    const directory = join(getAgentDir(), "sidekick-sessions");
     let dialogTail: Promise<unknown> = Promise.resolve();
-    const runtime = { manager: undefined as unknown as Manager, widget: undefined as unknown as StatusWidget, ctx };
+    const runtime = { manager: undefined as unknown as Manager, widget: undefined as unknown as StatusWidget, ctx, definitions };
     const dialog = (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal): Promise<RpcExtensionUIResponse | undefined> => {
       // Only questions for the human are relayed; a child's notifications (per-run stats toasts, for one) are not.
       if (!["select", "confirm", "input", "editor"].includes(request.method)) return Promise.resolve(undefined);
@@ -134,7 +154,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     runtime.widget.install(ctx);
   };
 
-  pi.on("session_start", (_event, ctx) => { start(ctx); });
+  pi.on("session_start", (_event, ctx) => { start(ctx, loadDefinitions(ctx)); });
   pi.on("session_shutdown", async () => {
     const runtime = current;
     current = undefined;
@@ -148,11 +168,11 @@ export default function sidekicks(pi: ExtensionAPI): void {
     runtime?.widget.dispose();
     await runtime?.manager.shutdown(false);
     releaseBusy();
-    start(ctx);
+    start(ctx, runtime?.definitions ?? loadDefinitions(ctx));
   });
 
   const text = (description: string, extra: { maxLength?: number } = {}) => Type.Optional(Type.String({ description, ...extra }));
-  const agentList = (ctx: ExtensionContext) => getAgents(ctx).map((agent) => {
+  const agentList = (agents: Agent[]) => agents.map((agent) => {
     const defaults = [agent.model, agent.thinking].filter(Boolean).join(":");
     return `- ${agent.name}${defaults ? ` (default ${defaults})` : ""}: ${agent.description.replace(/\s+/g, " ").trim()}`;
   }).join("\n");
@@ -183,9 +203,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     }),
     prepareLoadout: () => {
       if (!current) return;
-      let agents: string;
-      try { agents = agentList(current.ctx); }
-      catch { agents = "Agent configuration error; call status for details."; }
+      const agents = current.definitions.error ? "Agent configuration error; call status for details." : agentList(current.definitions.agents);
       return { descriptions: { subagent: `${DESCRIPTION}\n\nAgents:\n${agents || "none; add Markdown definitions to the configured sidekicks.agentsDir or default sidekicks/ folder"}` } };
     },
     renderCall: (args, theme) => renderCall(args, theme),
@@ -206,7 +224,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
         ({ content: [{ type: "text", text: `${prefix} ${describeChild(child)}` }], details: { action: args.action, child } });
       switch (args.action) {
         case "launch": {
-          const agents = getAgents(ctx);
+          const agents = agentsOf(runtime);
           const resolve = (input: { agent: string; task: string; name?: string; model?: string; thinking?: typeof args.thinking; cwd?: string }) => {
             if (!input.agent.trim() || !input.task.trim()) throw new Error("agent and task must not be blank");
             const agent = agents.find((agent) => agent.name === input.agent);
@@ -245,7 +263,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
         case "stop": return done("Stopped; conversation kept.", await runtime.manager.stop(requireText("child")));
         case "status": {
           const children = runtime.manager.snapshot();
-          return { content: [{ type: "text", text: statusText(children, getAgents(ctx)) }],
+          return { content: [{ type: "text", text: statusText(children, agentsOf(runtime)) }],
             details: { action: "status", children } satisfies ToolDetails };
         }
         default: throw new Error("Unknown subagent action");
@@ -260,6 +278,6 @@ export default function sidekicks(pi: ExtensionAPI): void {
     if (ctx.mode === "tui") {
       if (current.manager.snapshot().length) current.widget.focus();
       else ctx.ui.notify("No sidekicks yet.", "info");
-    } else ctx.ui.notify(statusText(current.manager.snapshot(), getAgents(ctx)), "info");
+    } else ctx.ui.notify(statusText(current.manager.snapshot(), agentsOf(current)), "info");
   } });
 }

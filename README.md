@@ -147,8 +147,16 @@ or trusted project `.pi/settings.json`:
 When set, only that folder is searched, not either default. Relative paths resolve
 from Pi's working directory; `~/` is supported. Invalid or missing configured folders
 report an error rather than falling back. Omit `agentsDir` to use the defaults.
-Use `/reload` after changing settings or definitions. Existing `agents/` folders
-are not read or migrated; they remain available for other extensions.
+Existing `agents/` folders are not read or migrated; they remain available for other extensions.
+
+Definitions are read once when a session starts, so `/reload` is needed after changing
+settings or definitions. The tool description lists them for the whole session, which keeps
+the provider's prompt cache valid; a changed description is a changed tool declaration, and
+some providers then re-read the whole prefix. A definition that cannot be used (missing
+name or description, invalid `model` or `thinking`, unreadable YAML, a duplicate name; the
+file listed first in a folder wins) is skipped, and the user gets one warning with each
+file and reason. The other agents keep working and the model is not told. An unusable
+`agentsDir` is an error notice instead, and `launch` and `status` report it.
 
 **Legacy migration:** unknown frontmatter is ignored, including tool restrictions,
 skill filters, and `systemPromptMode: replace`. Model pins in the old extension's
@@ -161,7 +169,7 @@ These are current implementation policies, not permanent product requirements.
 See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 
 - Each child has its own folder under Pi's user-data directory,
-  `~/.pi/agent/sidekicks/<child-id>/`, which holds everything about that child:
+  `~/.pi/agent/sidekick-sessions/<child-id>/`, which holds everything about that child:
 
   ```text
   session.jsonl       Pi's saved conversation (the whole child session)

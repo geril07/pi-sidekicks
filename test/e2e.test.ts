@@ -380,3 +380,55 @@ test("real child extension dialogs bridge to the human client without auto-appro
   assert.deepEqual(result, { confirmed: false, selected: "B", input: "qa-value" });
   await rpc.request({ type: "new_session" });
 });
+
+async function parentWith(t: test.TestContext, h: Awaited<ReturnType<typeof isolated>>, launch: object, session: string) {
+  const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+    "--session", join(h.dir, session), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] },
+    { cwd: h.dir, env: { ...h.env, SIDEKICKS_TEST_LAUNCH: JSON.stringify(launch) } });
+  t.after(() => rpc.stop());
+  const notices: { message: string; level?: string }[] = [];
+  rpc.on("event", (event: RpcEvent) => {
+    if (event.type === "extension_ui_request" && event.method === "notify") notices.push({ message: event.message, level: event.notifyType });
+  });
+  const toolResult = async () => {
+    await rpc.request({ type: "prompt", message: "Launch the requested agent." });
+    const deadline = performance.now() + 15_000;
+    while (true) {
+      const entries = (await rpc.request({ type: "get_entries" })).entries;
+      const found = entries.find((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent");
+      if (found?.type === "message" && found.message.role === "toolResult") return found.message;
+      assert(performance.now() < deadline, "Launch tool result timed out");
+      await delay(20);
+    }
+  };
+  return { rpc, notices, toolResult };
+}
+
+test("an invalid agent definition is skipped with one notice to the user, and the valid agents still launch", { timeout: 30_000 }, async (t) => {
+  const h = await isolated("batch-parent");
+  await writeFile(join(h.agent, "sidekicks", "broken.md"), "---\nname: broken\n---\n");
+  const parent = await parentWith(t, h, { agent: "worker", task: "Return local evidence" }, "parent.jsonl");
+  const result = await parent.toolResult();
+  assert.equal(result.isError, false);
+  assert.match(JSON.stringify(result.content), /worker/);
+  const own = parent.notices.filter((notice) => notice.message.startsWith("sidekicks:"));
+  assert.equal(own.length, 1, "the user is told once, at session start");
+  assert.equal(own[0].level, "warning");
+  assert.match(own[0].message, /skipped 1 invalid agent definition\./);
+  assert.match(own[0].message, /broken\.md: needs a name and a description/);
+  const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert(!calls.some((call) => JSON.stringify(call).includes("broken")), "the agent never hears about the broken file");
+});
+
+test("agent definitions are read when the session starts, not on every model turn", { timeout: 60_000 }, async (t) => {
+  const h = await isolated("batch-parent");
+  await writeFile(join(h.agent, "sidekicks", "broken.md"), "---\nname: broken\n---\n");
+  const first = await parentWith(t, h, { agent: "late", task: "Return local evidence" }, "first.jsonl");
+  while (first.notices.length === 0) await delay(20);
+  await writeFile(join(h.agent, "sidekicks", "late.md"), "---\nname: late\ndescription: Added after the session started\n---\n");
+  const stale = await first.toolResult();
+  assert.equal(stale.isError, true);
+  assert.match(JSON.stringify(stale.content), /Unknown agent\. Available: worker/);
+  const second = await parentWith(t, h, { agent: "late", task: "Return local evidence" }, "second.jsonl");
+  assert.equal((await second.toolResult()).isError, false, "a new session start sees the file");
+});

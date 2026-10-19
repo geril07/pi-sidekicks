@@ -16,6 +16,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   mkdirSync(join(agent, "sidekicks"));
   symlinkSync(join(root, "test/fixtures/faux-provider.ts"), join(agent, "extensions/faux-provider.ts"));
   writeFileSync(join(agent, "sidekicks/worker.md"), "---\nname: worker\ndescription: Test worker\n---\nWork on the task.\n");
+  writeFileSync(join(agent, "sidekicks/broken.md"), "---\nname: broken\n---\n");
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ tuiMode: mode, checkForUpdates: false }));
   const log = join(directory, "calls.jsonl");
   const socket = `sidekicks-${process.pid}-${mode}-${scenario}`;
@@ -35,7 +36,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   const keys = (...values: string[]) => { tmux("send-keys", "-t", "qa", ...values); };
   const shortcut = (letter: string) => literal(`\x1b${String.fromCharCode(letter.charCodeAt(0) - 96)}`);
   const paneDead = () => tmux("display-message", "-p", "-t", "qa", "#{pane_dead}").trim() === "1";
-  const noLocks = () => assert.equal([...globSync("sidekicks/**/*.lock", { cwd: agent })].length, 0, "graceful shutdown releases child writer locks");
+  const noLocks = () => assert.equal([...globSync("sidekick-sessions/**/*.lock", { cwd: agent })].length, 0, "graceful shutdown releases child writer locks");
   const command = ["env", `PI_CODING_AGENT_DIR=${agent}`, `SIDEKICKS_TEST_LOG=${log}`,
     `SIDEKICKS_TEST_SCENARIO=${scenario}`,
     ...(scenario === "batch-parent" ? [`SIDEKICKS_TEST_LAUNCH=${JSON.stringify({ tasks: [{ agent: "worker", task: "Work", name: "one" }, { agent: "worker", task: "Work", name: "two" }] })}`] : []),
@@ -47,6 +48,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     tmux("set-option", "-t", "qa", "remain-on-exit", "on");
     const startup = await waitFor((text) => text.includes("(sidekicks-test) scripted"), "startup");
     assert(!/[▸▾] sidekicks/.test(startup), "widget must stay hidden before any children exist");
+    assert(startup.includes("skipped 1 invalid agent definition") && startup.includes("broken.md: needs a name and a description"), "the user is told about the broken definition");
     writeFileSync(join(directory, "startup.txt"), startup);
     literal("Delegate this task to a worker and answer its question.");
     keys("Enter");
