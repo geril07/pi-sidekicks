@@ -60,6 +60,7 @@ export default function fixture(pi: ExtensionAPI): void {
   });
   pi.registerTool({ name: "human_dialogs", label: "Human dialogs", parameters: Type.Object({}), description: "Test child extension dialogs",
     async execute(_id, _args, _signal, _update, ctx) {
+      ctx.ui.notify("QA child toast", "info");
       const confirmed = await ctx.ui.confirm("QA confirm", "Explicit human choice", { timeout: 10_000 });
       const selected = await ctx.ui.select("QA select", ["A", "B"], { timeout: 10_000 });
       const input = await ctx.ui.input("QA input", "type here", { timeout: 10_000 });

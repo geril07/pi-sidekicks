@@ -22,7 +22,7 @@ input.on("line", (line) => {
   switch (command.type) {
     case "get_available_models": {
       if (mode === "invalid") { process.stdout.write("not JSON\n"); return; }
-      const respond = () => response({ models: [model] });
+      const respond = () => response({ models: mode === "catalog" ? [{ provider: "openai", id: "luna" }, { provider: "codex", id: "luna" }, { provider: "gateway", id: "openai/luna" }] : [model] });
       if (mode === "slow") setTimeout(respond, 100);
       else respond();
       break;

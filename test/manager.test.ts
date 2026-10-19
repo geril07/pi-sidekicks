@@ -43,7 +43,8 @@ test("launch allows more than three assignments, and stop retains the session id
   assert.equal(stopped.run.state, "cancelled");
   assert.equal(stopped.sessionPath, children[0].sessionPath);
   assert.equal(stopped.connected, false);
-  assert.equal(h.deliveries.filter((d) => d.child.id === stopped.id && d.kind === "result").length, 1);
+  assert.equal(h.deliveries.length, 0, "a stop is reported by its tool result only");
+  assert.equal(stopped.run.result, "Stopped by parent.");
   const next = await h.launch("five");
   assert.equal(next.run.state, "running");
 });
@@ -89,14 +90,15 @@ test("question delivery is deduplicated; only a matching answer continues the sa
   assert(prompts.every((p) => !p.message.startsWith("/")));
 });
 
-test("cancelling a waiting question delivers cancellation, not a successful result", async (t) => {
+test("stopping a waiting question cancels it without a second delivery or a successful result", async (t) => {
   const h = await harness("question");
   t.after(() => h.manager.shutdown());
   const child = await h.launch();
   await h.waitFor(() => h.deliveries.length === 1);
-  await h.manager.stop(child.id);
-  assert.equal(h.deliveries.at(-1)?.child.run.state, "cancelled");
-  assert.equal(h.deliveries.length, 2);
+  const stopped = await h.manager.stop(child.id);
+  assert.equal(stopped.run.state, "cancelled");
+  assert.equal(stopped.run.question, undefined);
+  assert.equal(h.deliveries.length, 1, "only the question was delivered");
 });
 
 test("provider failures stay failures, and terminal results arrive once", async (t) => {
@@ -190,8 +192,8 @@ test("explicit stop wins a race with final result extraction", async (t) => {
   await h.waitFor(() => h.manager.snapshot()[0].activity === "settling");
   await h.manager.stop(child.id);
   assert.equal(h.manager.snapshot()[0].run.state, "cancelled");
-  assert.equal(h.deliveries.length, 1);
-  assert.equal(h.deliveries[0].child.run.state, "cancelled");
+  assert.equal(h.manager.snapshot()[0].run.result, "Stopped by parent.", "the text does not depend on which handler settles first");
+  assert.equal(h.deliveries.length, 0);
 });
 
 test("process exit alone is interruption, never successful completion", async (t) => {
@@ -280,6 +282,15 @@ test("invalid model/thinking and malformed RPC fail startup without keeping a li
   await assert.rejects(invalid.launch(), /invalid RPC JSON/);
   assert(h.manager.snapshot().every((child) => !child.connected && child.run.state === "failed"));
   assert.equal(invalid.manager.snapshot()[0].run.state, "failed");
+});
+
+test("model selection prefers a full provider/id and names the candidates when a bare id is ambiguous", async (t) => {
+  const h = await harness("catalog");
+  t.after(() => h.manager.shutdown());
+  const launch = (model: string) => h.manager.launch({ agent: "worker", instructions: "work", task: "work", model, thinking: "off" });
+  assert.equal((await launch("openai/luna")).model, "openai/luna", "the gateway id `openai/luna` does not make this ambiguous");
+  assert.equal((await launch("gateway/openai/luna")).model, "gateway/openai/luna");
+  await assert.rejects(launch("luna"), /exactly one.*Matches: openai\/luna, codex\/luna/);
 });
 
 test("shutdown during readiness cannot leave a writer or submit a task", async () => {

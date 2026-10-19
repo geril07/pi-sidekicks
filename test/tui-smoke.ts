@@ -101,9 +101,13 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     keys("Down");
     await waitFor((text) => text.includes("esc back"), "down on an empty editor enters the list");
     keys("Down", "Enter");
-    await waitFor((text) => text.includes(".jsonl"), "enter shows row details");
+    await waitFor((text) => text.includes(`${agent}/sidekicks/`), "enter shows the storage folder");
     keys("Escape");
     await waitFor((text) => !text.includes("esc back") && /▸ sidekicks/.test(text), "escape returns to the editor and collapses");
+    keys("Down");
+    await waitFor((text) => text.includes("esc back"), "down re-enters the list");
+    keys("Up");
+    await waitFor((text) => !text.includes("esc back") && /▸ sidekicks/.test(text), "up from the first row collapses the list");
     literal("alpha beta");
     keys("Left", "Left", "Left", "Left");
     await waitFor((text) => text.includes("alpha beta"), "draft");

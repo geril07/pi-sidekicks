@@ -193,7 +193,7 @@ test(`nonblocking questions notify during work, accept correlated active/idle re
     assert.equal(stopped.run.state, "cancelled");
     assert.equal(stopped.connected, false);
     assert.equal(stopped.questions!.length, 0);
-    assert.equal(deliveries.filter((d) => d.kind === "result").length, 1);
+    assert.equal(deliveries.filter((d) => d.kind === "result").length, 0, "a stop is reported by its tool result only");
     await assert.rejects(manager.answer(child.id, questions[0].id, "after stop"), /stale/);
     assert.equal((await calls()).filter((r) => r.call).length, 1);
     return;
@@ -373,6 +373,7 @@ test("real child extension dialogs bridge to the human client without auto-appro
   await done;
   assert.deepEqual(dialogs, ["confirm", "select", "input"]);
   assert(warnings.some((warning) => warning.includes("multiline editor bridging requires a TUI parent")));
+  assert(!warnings.some((warning) => warning.includes("QA child toast")), "a child's notifications do not reach the parent");
   const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   const result = calls.find((call) => call.dialogs)?.dialogs;
   assert.deepEqual(result, { confirmed: false, selected: "B", input: "qa-value" });

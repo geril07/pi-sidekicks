@@ -6,7 +6,7 @@ import { StatusWidget } from "../src/widget.ts";
 import type { ChildSnapshot } from "../src/manager.ts";
 
 const child = (id: string): ChildSnapshot => ({ id, name: `worker-${id}`, agent: "worker", model: "local/model", thinking: "low",
-  run: { id: `run-${id}`, state: "running", delivered: false, startedAt: Date.now() - 65_000 }, connected: true, activity: "read src/a.ts", sessionPath: `/child-${id}.jsonl` });
+  run: { id: `run-${id}`, state: "running", delivered: false, startedAt: Date.now() - 65_000 }, connected: true, activity: "read src/a.ts", sessionPath: `/store/child-${id}.jsonl` });
 
 test("widget is hidden without children and summarizes states once they exist", () => {
   const children: ChildSnapshot[] = [];
@@ -23,28 +23,65 @@ test("widget is hidden without children and summarizes states once they exist", 
   assert.deepEqual(widget.render(120), []);
 });
 
-test("rows show name, model, state, bounded activity and elapsed time; clicks toggle and open details", () => {
-  const children = [child("one"), child("two")];
+test("rows show name, agent, model, state and elapsed time; a failure keeps its reason; Enter shows only the storage folder", () => {
+  const children = [child("one"), child("two"), child("three")];
   children[0].name = "名字".repeat(40) + "\x1b]52;bad\x07";
-  children[1].run = { ...children[1].run, state: "completed", result: "line one\nline two", endedAt: Date.now() };
+  children[0].run = { ...children[0].run, question: { id: "q1", text: "which database?" } };
+  children[1].run = { ...children[1].run, state: "completed", result: "line one\nline two", endedAt: Date.now() - 1000 };
+  children[2].run = { ...children[2].run, state: "failed", result: "\nboom: provider refused\nmore", endedAt: Date.now() - 2000 };
   const widget = new StatusWidget(() => children);
   assert.equal(widget.render(80).length, 1);
   assert.deepEqual(widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent), { handled: true });
   const lines = widget.render(120);
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, 4);
   assert.match(lines[2], /worker-two/);
-  assert.match(lines[2], /local\/model|model:low/);
+  assert.match(lines[2], /worker local\/model:low|model:low/);
   assert.match(lines[2], /completed/);
   assert.match(lines[1], /1m05s|1m0\ds/);
+  assert.match(lines[3], /failed.*boom: provider refused/);
+  for (const hidden of ["read src/a.ts", "which database?", "line one"]) assert(!lines.join("\n").includes(hidden), `${hidden} stays out of the rows`);
   for (const width of [1, 10, 40, 80]) {
     for (const line of widget.render(width)) { assert(visibleWidth(line) <= width); assert(!line.includes("\x1b]")); assert(!line.includes("\x07")); }
   }
   assert.deepEqual(widget.handleMouse({ type: "click", button: "left", y: 2 } as TuiMouseEvent), { handled: true });
-  const detailed = widget.render(120).join("\n");
-  assert.match(detailed, /line one/);
-  assert.match(detailed, /child-two\.jsonl/);
+  const detailed = widget.render(120);
+  assert.equal(detailed.length, 5, "one folder line");
+  assert.match(detailed[3], /^\s+\/store$/);
+  assert(!detailed.join("\n").includes("line one"));
   widget.handleMouse({ type: "click", button: "left", y: 0 } as TuiMouseEvent);
   assert.equal(widget.render(120).length, 1);
+});
+
+test("live children come first in launch order, finished ones follow newest first, and ten rows fit before scrolling", () => {
+  const at = (id: string, state: "running" | "waiting" | "completed" | "failed", ended?: number): ChildSnapshot => ({ ...child(id), name: id,
+    run: { id: `run-${id}`, state, delivered: false, startedAt: Date.now() - 100_000, ...(ended ? { endedAt: Date.now() - ended } : {}) } });
+  const names = (lines: string[]) => lines.slice(1).map((line) => line.match(/\b(d\d+|a\d+|r\d+)\b/)?.[1]);
+  const children = [at("d1", "completed", 5000), at("d2", "failed", 3000), at("d3", "completed", 9000),
+    at("r1", "running"), at("a1", "waiting"), at("r2", "running")];
+  const widget = new StatusWidget(() => children);
+  widget.toggle();
+  assert.deepEqual(names(widget.render(120)), ["r1", "a1", "r2", "d2", "d1", "d3"]);
+  assert.deepEqual(children.map((c) => c.name), ["d1", "d2", "d3", "r1", "a1", "r2"], "the caller's list is not reordered");
+
+  const ten = Array.from({ length: 10 }, (_, i) => at(`r${i}`, "running"));
+  const tenWidget = new StatusWidget(() => ten);
+  tenWidget.toggle();
+  const lines = tenWidget.render(120);
+  assert.equal(lines.length, 11);
+  assert(!lines.join("\n").includes("more"));
+
+  const twelve = [at("d0", "completed", 1000), at("d1", "completed", 2000), at("d2", "completed", 3000),
+    ...Array.from({ length: 9 }, (_, i) => at(`r${i}`, "running"))];
+  const long = new StatusWidget(() => twelve);
+  long.toggle();
+  const rendered = long.render(120);
+  assert.deepEqual(names(rendered).slice(0, 10), ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "d0"]);
+  assert.match(rendered.at(-1)!, /↓ 2 more/);
+
+  long.selectedId = "d2";
+  twelve[3] = { ...twelve[3], run: { ...twelve[3].run, state: "completed", endedAt: Date.now() } };
+  assert.equal(long.selectedId, "d2", "the cursor stays on its child while rows reorder");
+  assert.match(long.render(120).join("\n"), /↑ 2 more/);
 });
 
 test("down on an empty editor enters row selection; other input, drafts, and dialogs are untouched", async (t) => {
@@ -83,8 +120,7 @@ test("down on an empty editor enters row selection; other input, drafts, and dia
   assert.equal(widget.selectedId, "one");
   assert.equal(widget.detailId, undefined);
   input("\x1b[A");
-  assert.equal(widget.focused, false);
-  assert.equal(widget.expanded, true, "leaving the first row keeps the list open");
+  assert(!widget.focused && !widget.expanded, "up from the first row closes the list");
 
   input("\x1b[B");
   input("\x1b");
@@ -92,8 +128,8 @@ test("down on an empty editor enters row selection; other input, drafts, and dia
 
   input("\x1b[B");
   input("x");
-  assert.equal(widget.focused, false);
-  assert.equal(editor.getText(), "x", "an unrelated key reaches the editor");
+  assert(!widget.focused && !widget.expanded, "an unrelated key closes the list");
+  assert.equal(editor.getText(), "x", "and still reaches the editor");
 
   editor.setText("draft");
   input("\x1b[B");

@@ -97,8 +97,9 @@ outcomes, excluding startup failures from group membership.
 
 Together members carry one opaque group ID on their current persisted run; no
 separate group registry exists. Hold completed results undelivered, but deliver
-failures/interruptions and questions immediately. Parent stops mark grouped runs
-delivered without a message. Once all current members settle, deliver one
+failures/interruptions and questions immediately. A parent stop marks any
+run delivered without a message: the stop tool result is the outcome, and the stopped
+run's text is always `Stopped by parent.` Once all current members settle, deliver one
 `sidekicks:group` message with full held results plus short status lines for others;
 no held results means no message. Sending to a held member releases its result
 individually before replacing its run without a group ID. After the runtime becomes
@@ -170,11 +171,16 @@ If a batch also contains a blocking call, its barrier still defers sibling calls
 children, including settled conversations available for follow-up. It follows the
 nicobailon fleet-status gesture: `ui.onTerminalInput` claims Down only when the
 focused component is the main editor (editor-shaped and its text equals
-`ctx.ui.getEditorText()`) and that text is empty; every other key blurs the list
-and passes through. Relayed child dialogs call `suspend()` so they own the keyboard.
-No overlay and no registered shortcuts. The summary line and rows toggle on click
-(fullscreen only). Selection tracks child IDs. Rendering bounds width, row count,
-detail lines, and activity text, and drops terminal control characters.
+`ctx.ui.getEditorText()`) and that text is empty; every other key closes the list
+and passes through. Escape and Up on the first row also close it. Relayed child
+dialogs call `suspend()` so they own the keyboard. No overlay and no registered shortcuts. The summary line and rows toggle on click
+(fullscreen only). Selection tracks child IDs. Rows show state, name, agent, model,
+elapsed time, and the first line of a failure; no tool activity or question text. Enter
+shows only the storage folder. Order: starting/running/waiting children first in launch
+order (rows stay put), then finished ones by end time, newest first; selection tracks the
+child ID, so a row that finishes moves under the cursor. Ten rows are visible and the
+window follows the selection. Rendering bounds width and row count, and drops
+terminal control characters.
 
 `present.ts` holds state glyphs/tones, elapsed formatting, and the plain text the
 model reads (child lines, status, delivered question/result). `render.ts` holds the
@@ -188,8 +194,8 @@ Pattern source:
 Serialize child-extension dialogs through one promise chain. Relay select, confirm,
 and input to the parent's human UI with cancellation/deadlines. Relay multiline
 editor through Pi's public editor component in a cancellable TUI overlay; cancel
-with a warning when the parent is RPC-only. Never auto-approve. Notify is forwarded;
-child widget/title/editor mutations do not change the parent's UI. Arbitrary child
+with a warning when the parent is RPC-only. Never auto-approve. A child's notify,
+widget, title, and editor mutations are dropped and do not reach the parent's UI. Arbitrary child
 custom TUIs are unsupported by Pi RPC.
 
 The child environment marker suppresses this package's parent registrations; only

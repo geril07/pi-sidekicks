@@ -40,6 +40,7 @@ export interface ManagerOptions {
 
 const active = (state: RunState) => state === "starting" || state === "running" || state === "waiting";
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
+const STOPPED = "Stopped by parent.";
 const DETACHED = "Parent session detached. Continue explicitly; no automatic replay; previous external effects may be unknown.";
 const CHILD_BRIEFING = [
   "You are a sidekick: a child agent working for a parent agent. Messages that start with \"Sidekicks task:\" are your assignment; \"guidance\", \"follow-up\" and \"answer\" messages also come from the parent.",
@@ -307,8 +308,12 @@ export class Manager {
       void this.disconnect(child).catch(() => {});
     });
     const catalog = await rpc.request({ type: "get_available_models" });
-    const matches = catalog.models.filter((model) => `${model.provider}/${model.id}` === record.model || model.id === record.model);
-    if (matches.length !== 1) throw new Error(`Model must match exactly one available child model: ${record.model}`);
+    // A full provider/id wins over bare ids: gateway catalogs have ids such as openrouter's `openai/gpt-6-luna`.
+    const named = catalog.models.filter((model) => `${model.provider}/${model.id}` === record.model);
+    const matches = named.length ? named : catalog.models.filter((model) => model.id === record.model);
+    if (matches.length !== 1) {
+      throw new Error(`Model must match exactly one available child model: ${record.model}${matches.length ? `. Matches: ${matches.map((model) => `${model.provider}/${model.id}`).join(", ")}` : ""}`);
+    }
     const model = matches[0];
     await rpc.request({ type: "set_model", provider: model.provider, modelId: model.id });
     const { levels } = await rpc.request({ type: "get_available_thinking_levels" });
@@ -379,7 +384,7 @@ export class Manager {
   }
 
   private async settle(child: Child, aborted: boolean): Promise<void> {
-    if (child.stopRequested) { child.settling = false; this.finish(child, "cancelled", "Stopped by parent."); return; }
+    if (child.stopRequested) { child.settling = false; this.finish(child, "cancelled", STOPPED); return; }
     const run = child.record.run;
     if (run.question) {
       run.state = "waiting";
@@ -398,7 +403,7 @@ export class Manager {
     const result = await child.rpc!.request({ type: "get_last_assistant_text" });
     child.settling = false;
     if (!this.alive) return;
-    if (child.stopRequested) this.finish(child, "cancelled", "Stopped by parent.");
+    if (child.stopRequested) this.finish(child, "cancelled", STOPPED);
     else if (child.lastError) this.finish(child, "failed", child.lastError);
     else if (aborted || child.lastAborted) this.finish(child, "interrupted", "Child aborted without a parent stop or question.");
     else this.finish(child, "completed", result.text ?? "(No assistant text)");
@@ -408,6 +413,8 @@ export class Manager {
     const run = child.record.run;
     if (!active(run.state)) return;
     if (!deliver) run.groupId = undefined;
+    // The stop tool's own result reports a stop, and which handler settles first must not change its text.
+    if (state === "cancelled") { result = STOPPED; run.delivered = true; }
     run.state = state;
     run.endedAt = Date.now();
     run.question = undefined;
@@ -415,7 +422,6 @@ export class Manager {
     run.resultFile = this.saveResult(child.record, result);
     run.result = result.length <= 24_000 ? result : `${result.slice(0, 24_000)}\n[Truncated. Full result: ${run.resultFile ?? child.record.sessionPath}]`;
     child.activity = state;
-    if (run.groupId && state === "cancelled") run.delivered = true;
     this.commit(child);
     if (deliver && !(run.groupId && state === "completed") && !run.delivered && this.alive) {
       run.delivered = true;
@@ -485,7 +491,7 @@ export class Manager {
       catch { /* Termination below is also required when RPC is unresponsive. */ }
     }
     await this.disconnect(child);
-    this.finish(child, "cancelled", "Stopped by parent. External effects are not undone.");
+    this.finish(child, "cancelled", STOPPED);
     this.commit(child);
     return this.view(child);
   }

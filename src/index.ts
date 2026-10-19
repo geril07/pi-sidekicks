@@ -79,10 +79,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
     let dialogTail: Promise<unknown> = Promise.resolve();
     const runtime = { manager: undefined as unknown as Manager, widget: undefined as unknown as StatusWidget, ctx };
     const dialog = (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal): Promise<RpcExtensionUIResponse | undefined> => {
-      if (request.method === "notify") {
-        if (current === runtime && !signal.aborted) ctx.ui.notify(`${child.name}: ${request.message}`, request.notifyType);
-        return Promise.resolve(undefined);
-      }
+      // Only questions for the human are relayed; a child's notifications (per-run stats toasts, for one) are not.
       if (!["select", "confirm", "input", "editor"].includes(request.method)) return Promise.resolve(undefined);
       if ("timeout" in request && request.timeout !== undefined) {
         signal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, request.timeout))]);

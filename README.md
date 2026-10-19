@@ -30,7 +30,7 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 | `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. Batch: tasks take the same optional fields; optional `results`, `shared`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
-| `stop` | `child` | Cancels work and closes the process; retains the transcript. |
+| `stop` | `child` | Cancels work and closes the process; retains the transcript. The tool result is the outcome; no separate message follows. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
 Children are addressed by `name` (unique; defaults to the agent name, then `name-2`, ...).
@@ -83,11 +83,16 @@ before repeating work.
 
 The widget below the editor is hidden when the session has no children. Once
 children exist, it shows a one-line summary (running, waiting, failed, done, stopped)
-and remains available for progress, pending questions, results, and follow-up.
+and remains available for follow-up. Questions and results arrive as transcript messages.
 
 - Down on an empty editor enters the list; any other key goes to the editor as usual.
-- Up/Down (or j/k) selects, Enter toggles details for the row (question, result
-  start, transcript path), Escape or Up on the first row leaves.
+- Rows show state, name, agent, model and elapsed time (plus the first line of a
+  failure). No tool calls or prompt text. Live children come first, in launch order;
+  finished ones follow, newest first. Ten rows show at once, and Up/Down scrolls the
+  rest (`↑ N more`, `↓ N more`).
+- Up/Down (or j/k) selects, Enter toggles the row's storage folder (transcript and
+  result files), Escape or Up on the first row leaves and collapses the list;
+  any other key does too and still reaches the editor.
 - Clicking the summary expands/collapses it, and clicking a row toggles its details
   (fullscreen mode only). `/sidekicks` enters the list without a keystroke.
 - Results, questions, and batches appear in the transcript as collapsible `[sidekick]` blocks;

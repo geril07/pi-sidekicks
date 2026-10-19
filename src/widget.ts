@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ExtensionEditorComponent } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, type EditorComponent, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
@@ -5,8 +6,7 @@ import type { ChildSnapshot } from "./manager.ts";
 import { elapsedOf, isActive, modelLabel, plain, plainStyle, stateGlyph, stateWord, summary, type Style } from "./present.ts";
 
 const WIDGET_KEY = "sidekicks";
-const VISIBLE_ROWS = 8;
-const DETAIL_LINES = 8;
+const VISIBLE_ROWS = 10;
 const REFRESH_MS = 1000;
 
 const rightAlign = (left: string, right: string, width: number) => {
@@ -74,13 +74,26 @@ export class StatusWidget implements Component {
     this.refresh();
   }
 
+  /** Leave row selection by the user's choice: the list returns to its summary line, as in the fleet status. */
+  private leave(): void {
+    this.expanded = false;
+    this.blur();
+  }
+
   /** Hold off selection while a relayed child dialog is open. */
   suspend(value: boolean): void {
     this.suspended = value;
     if (value) this.blur();
   }
 
-  private selected(children = this.snapshot()): number {
+  /** Live work first, in launch order so rows stay put; finished conversations after, newest first. */
+  private ordered(): ChildSnapshot[] {
+    const finishedAt = (child: ChildSnapshot) => child.run.endedAt ?? child.run.startedAt ?? 0;
+    return [...this.snapshot()].sort((a, b) => Number(isActive(b.run.state)) - Number(isActive(a.run.state))
+      || (isActive(a.run.state) ? 0 : finishedAt(b) - finishedAt(a)));
+  }
+
+  private selected(children = this.ordered()): number {
     const index = children.findIndex((child) => child.id === this.selectedId);
     if (index >= 0) return index;
     this.selectedId = children[0]?.id;
@@ -88,7 +101,7 @@ export class StatusWidget implements Component {
   }
 
   render(width: number): string[] {
-    const children = this.snapshot();
+    const children = this.ordered();
     this.rowIds = [];
     if (!children.length) return [];
     const { style } = this;
@@ -103,7 +116,7 @@ export class StatusWidget implements Component {
     for (const child of children.slice(first, first + VISIBLE_ROWS)) {
       lines.push(this.row(child, child.id === this.selectedId && this.focused, width));
       this.rowIds.push(child.id);
-      if (child.id === this.detailId) for (const line of this.detail(child, width)) { lines.push(line); this.rowIds.push(child.id); }
+      if (child.id === this.detailId) { lines.push(this.detail(child, width)); this.rowIds.push(child.id); }
     }
     const hidden = children.length - first - VISIBLE_ROWS;
     if (hidden > 0) { lines.push(truncateToWidth(style.fg("dim", `   ↓ ${hidden} more`), width)); this.rowIds.push(undefined); }
@@ -114,29 +127,15 @@ export class StatusWidget implements Component {
     const { style } = this;
     const state = child.connected || !isActive(child.run.state) ? stateWord(style, child.run.state) : style.fg("warning", `detached/${child.run.state}`);
     const agent = child.agent === child.name ? "" : `${child.agent} `;
-    const activity = child.run.question ? `asks: ${child.run.question.text}`
-      : isActive(child.run.state) ? child.connected ? child.activity : ""
-      : ["failed", "interrupted"].includes(child.run.state) ? child.run.result?.split("\n").find((line) => line.trim()) ?? "" : "";
-    const left = `${selected ? style.fg("accent", ">") : " "} ${stateGlyph(style, child.run.state)} ${style.bold(plain(child.name))} ${style.fg("dim", `${plain(agent)}${plain(modelLabel(child))}`)} ${state}${activity ? style.fg("muted", ` · ${plain(activity)}`) : ""}`;
+    const reason = ["failed", "interrupted"].includes(child.run.state) ? child.run.result?.split("\n").find((line) => line.trim()) ?? "" : "";
+    const left = `${selected ? style.fg("accent", ">") : " "} ${stateGlyph(style, child.run.state)} ${style.bold(plain(child.name))} ${style.fg("dim", `${plain(agent)}${plain(modelLabel(child))}`)} ${state}${reason ? style.fg("muted", ` · ${plain(reason)}`) : ""}`;
     const elapsed = elapsedOf(child.run);
     return rightAlign(` ${left}`, elapsed ? style.fg("dim", elapsed) : "", width);
   }
 
-  private detail(child: ChildSnapshot, width: number): string[] {
-    const { style } = this;
-    const body: string[] = [];
-    if (child.run.question) body.push(`question ${child.run.question.id}: ${child.run.question.text}`);
-    for (const question of child.questions ?? []) body.push(`question ${question.id} (non-blocking): ${question.text}`);
-    if (child.run.result && !isActive(child.run.state)) body.push(...child.run.result.split("\n"));
-    else if (!body.length) body.push(child.activity);
-    const lines = body.filter((line) => line.trim()).slice(0, DETAIL_LINES);
-    const more = body.filter((line) => line.trim()).length - lines.length;
-    const shown = lines.map((line) => style.fg("muted", `     ${plain(line)}`));
-    if (more > 0) shown.push(style.fg("dim", `     … ${more} more lines`));
-    if (child.cwd) shown.push(style.fg("dim", `     cwd ${plain(child.cwd)}`));
-    if (child.run.resultFile) shown.push(style.fg("dim", `     ${plain(child.run.resultFile)}`));
-    shown.push(style.fg("dim", `     ${plain(child.sessionPath)}`));
-    return shown.map((line) => truncateToWidth(line, width));
+  /** Where the child's transcript and result files live, for finding them from a shell. */
+  private detail(child: ChildSnapshot, width: number): string {
+    return truncateToWidth(this.style.fg("dim", `     ${plain(dirname(child.sessionPath))}`), width);
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -160,7 +159,7 @@ export class StatusWidget implements Component {
 
   handleKey(data: string): { consume?: boolean } | undefined {
     if (this.disposed || isKeyRelease(data)) return undefined;
-    const children = this.snapshot();
+    const children = this.ordered();
     if (!children.length || this.suspended || !this.editorFocused()) {
       if (this.focused) this.blur();
       return undefined;
@@ -173,16 +172,15 @@ export class StatusWidget implements Component {
     let index = this.selected(children);
     if (matchesKey(data, "down") || matchesKey(data, "j")) index = Math.min(children.length - 1, index + 1);
     else if (matchesKey(data, "up") || matchesKey(data, "k")) {
-      if (index === 0) { this.blur(); return { consume: true }; }
+      if (index === 0) { this.leave(); return { consume: true }; }
       index -= 1;
     } else if (matchesKey(data, "enter")) {
       this.detailId = this.detailId === children[index].id ? undefined : children[index].id;
     } else if (matchesKey(data, "escape")) {
-      this.expanded = false;
-      this.blur();
+      this.leave();
       return { consume: true };
     } else {
-      this.blur();
+      this.leave();
       return undefined;
     }
     this.selectedId = children[index].id;

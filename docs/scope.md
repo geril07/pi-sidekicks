@@ -34,8 +34,10 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
 - The widget can collapse and expand, including clicking its visible summary.
 - Arrow-key navigation can enter and move through child rows, comparable to the
   current nicobailon compact status UI. Preserve normal editor input outside that mode.
-- Show useful identity/progress: role or name, model, state, and bounded current activity.
-  Exact labels and placement are not settled.
+- Show useful identity/progress: role or name, model, state, and elapsed time. Exact labels
+  and placement are not settled. Later correction (2026-10-19): the widget does not show
+  current activity (tool calls) or question/prompt text; a failure keeps its first line.
+  Enter shows only the storage folder.
 - UX correction (2026-10-18): the first widget was rejected. Follow the nicobailon
   pattern: Down from the editor enters the list; no shortcut hints in the status
   line; `Ctrl+Alt+N` did not work for the operator and was removed. Results and
@@ -123,7 +125,7 @@ those records. Existing source is evidence of implementation, not user approval.
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task
 timeouts), an 8 MiB RPC-line bound, 8,000-character questions, 100-character names,
-24,000-character result summaries (the full result is also saved as a per-run `.result.md` file beside the transcript), and eight visible
+24,000-character result summaries (the full result is also saved as a per-run `.result.md` file beside the transcript), and ten visible
 widget rows with navigation. Their exact values are assistant-selected safeguards,
 not requirements or consequences of the typical child count. This correction does
 not remove them automatically.
