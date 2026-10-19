@@ -78,6 +78,61 @@
       "runtimeCodeLines": 832,
       "runtimeCodeFiles": 3,
       "testCodeLines": 0
+    },
+    {
+      "repository": "code-yeongyu/oh-my-openagent",
+      "url": "https://github.com/code-yeongyu/oh-my-openagent",
+      "path": ".refs/code-yeongyu/oh-my-openagent",
+      "commit": "da0fccea282f603e10a240bdba6fe9af58261f5a",
+      "commitDate": "2026-10-19T18:25:12+09:00",
+      "purpose": "Agent-facing surface audit (2026-10-19): tool descriptions, prompts, result formats",
+      "readPaths": [
+        "docs/guide/senpi-task.md",
+        "packages/senpi-task/src/tools/",
+        "packages/senpi-task/src/completion/",
+        "packages/senpi-task/src/runners/in-process/subagent-prompt.ts",
+        "packages/omo-opencode/src/agents/sisyphus-dynamic-prompt-execution.ts"
+      ]
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "url": "https://github.com/can1357/oh-my-pi",
+      "path": ".refs/can1357/oh-my-pi",
+      "commit": "8cd716920d5f963f1bcd5ba6e9d98a3fee0c3b5b",
+      "commitDate": "2026-10-19T11:36:53+02:00",
+      "purpose": "Agent-facing surface audit (2026-10-19): tool descriptions, prompts, result formats",
+      "readPaths": [
+        "packages/coding-agent/src/prompts/tools/task*.md",
+        "packages/coding-agent/src/prompts/system/subagent-*.md",
+        "packages/coding-agent/src/prompts/agents/task.md"
+      ]
+    },
+    {
+      "repository": "sst/opencode",
+      "url": "https://github.com/anomalyco/opencode",
+      "path": ".refs/sst/opencode",
+      "commit": "ba06ff9e0bf2dcefbbbc3a1d6094f3572d77c84e",
+      "commitDate": "2026-10-19T03:59:45Z",
+      "purpose": "Agent-facing surface audit (2026-10-19): tool descriptions, prompts, result formats",
+      "readPaths": [
+        "packages/core/src/tool/plugin/subagent.ts",
+        "packages/core/src/session/subagent-completion.ts",
+        "packages/core/src/plugin/system-prompt/",
+        "packages/core/src/plugin/agent.ts"
+      ]
+    },
+    {
+      "repository": "lmn451/pi-subagentura",
+      "url": "https://github.com/lmn451/pi-subagentura",
+      "path": ".refs/lmn451/pi-subagentura",
+      "commit": "644387d5a60db88aa07f743473dbb5b1993ad013",
+      "commitDate": "2026-10-18T10:55:34+03:00",
+      "purpose": "Agent-facing surface audit (2026-10-19): interactive tool contracts, responsibility routing, result references",
+      "readPaths": [
+        "ORCHESTRATOR_V2_SYSTEM_PROMPT.md",
+        "src/tool-guidance.ts",
+        "src/tools/interactive.ts"
+      ]
     }
   ]
 }

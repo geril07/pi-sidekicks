@@ -23,6 +23,25 @@ are counted separately. A zero means no test source matched, not proof of no tes
 The lock records package versions and commit dates; matching version numbers do
 not imply matching commits.
 
+### Added 2026-10-19 for the agent-surface audit
+
+These were read for what the model sees (tool descriptions, prompts, result formats), not for
+runtime code. No LOC was measured: they are large monorepos and the numbers would mislead.
+Full findings: [agent-surface-audit](../docs/agent-surface-audit.md).
+Pinned links and inspected paths: [source map](agent-surface-sources.md).
+
+| Repository | Commit | Read these paths |
+|---|---|---|
+| [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) (OmO) | da0fccea282f | `docs/guide/senpi-task.md`, `packages/senpi-task/src/{tools,completion}/`, `packages/senpi-task/src/runners/in-process/subagent-prompt.ts` |
+| [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) (OMP) | 8cd716920d5f | `packages/coding-agent/src/prompts/{tools/task*.md,system/subagent-*.md,agents/task.md}` |
+| [anomalyco/opencode](https://github.com/anomalyco/opencode) (v2 `subagent` tool; local path `.refs/sst/opencode` follows the clone URL redirect) | ba06ff9e0bf2 | `packages/core/src/tool/plugin/subagent.ts`, `packages/core/src/session/subagent-completion.ts`, `packages/core/src/plugin/system-prompt/` |
+| [lmn451/pi-subagentura](https://github.com/lmn451/pi-subagentura) | 644387d5a60d | `ORCHESTRATOR_V2_SYSTEM_PROMPT.md`, `src/tool-guidance.ts`, `src/tools/interactive.ts` |
+
+Senpi (`code-yeongyu/senpi`, the Pi fork under OmO) was cloned and dropped: its README states
+"No sub-agents"; the task tool lives in OmO's `senpi-task` package. Codex was read from a
+clone outside this repository (`/home/geril/code/oss/codex`, commit 0b863c69f50335acd92164aab971cb58d298c2fe,
+`codex-rs/core/src/tools/handlers/multi_agents_spec.rs`); it is not pinned here.
+
 The operator's installed nicobailon revision is different. Its identity and settings
 are preserved in [operator-baseline.md](../docs/operator-baseline.md).
 
@@ -84,7 +103,6 @@ Their findings are preserved in [research.md](../docs/research.md).
 | [kunkun9527/pi-subagents-lean](https://github.com/kunkun9527/pi-subagents-lean) | Wrapper/schema reduction, not a smaller execution core. |
 | [mjakl/pi-subagent](https://github.com/mjakl/pi-subagent) | Named continuation reference, but synchronous delegation. |
 | [AgwaB/pi-subagent](https://github.com/AgwaB/pi-subagent) | Artifacts, sandbox/worktrees, and panel rather than the selected narrow control loop. |
-| [lmn451/pi-subagentura](https://github.com/lmn451/pi-subagentura) | Rich attach/recovery/workflow system, larger than current needs. |
 | [amosblomqvist/pi-subagents](https://github.com/amosblomqvist/pi-subagents) | Minimal synchronous design with custom tool-extension mapping. |
 | [eggmasonvalue/pi-subagent](https://github.com/eggmasonvalue/pi-subagent) | Intentionally synchronous; omits roles and async job handles. |
 | [anasalqoyyum/pi-durable-subagents](https://github.com/anasalqoyyum/pi-durable-subagents) | Small Durable example, but no ordinary child extensions/MCP. |
