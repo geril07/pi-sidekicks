@@ -168,7 +168,7 @@ test("a completed run writes its full result as plain text in the child's folder
   const file = join(folder, "result-1.md");
   assert.equal(first.run.resultFile, file);
   assert(first.run.result!.endsWith(`[Truncated. Full result: ${file}]`));
-  assert(deliveryText(first, "result").includes(`): ${file}\n`));
+  assert(deliveryText(first, "result").includes(`above: ${file}\n`));
   const text = await readFile(file, "utf8");
   assert.equal(text, `${"x".repeat(30000)}\n`);
   assert.equal((await stat(file)).mode & 0o777, 0o600);

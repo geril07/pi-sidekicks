@@ -79,16 +79,21 @@ export function groupText(members: ChildSnapshot[]): string {
       : `Sidekick ${child.name} ${STATES[child.run.state].word}${child.run.state === "failed" || child.run.state === "interrupted" ? " (already reported)" : ""}.`)].join("\n\n");
 }
 
+const escapeAttribute = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Child text may contain our own closing tag; neutralise any sidekick tag so it cannot end the block early. */
+const block = (child: ChildSnapshot, text: string) =>
+  `<sidekick name="${escapeAttribute(child.name)}" state="${child.run.state}">\n${text.replace(/<(\/?sidekick)/gi, "&lt;$1")}\n</sidekick>`;
+
 /** What the parent model reads when a child finishes or asks. The human sees a rendered version of the same message. */
 export function deliveryText(child: ChildSnapshot, kind: "question" | "result", question?: Question, blocking?: boolean): string {
   if (kind === "question") {
     return [`Sidekick ${child.name} asks (question ${question!.id}; ${blocking ? "blocking: it is paused until you answer" : "non-blocking: it keeps working"}):`,
-      "", question!.text, "",
-      `Reply with subagent {"action":"answer","child":"${child.name}","questionId":"${question!.id}","answer":"..."}.`].join("\n");
+      "", block(child, question!.text), "",
+      `Reply with subagent ${JSON.stringify({ action: "answer", child: child.name, questionId: question!.id, answer: "..." })}.`].join("\n");
   }
   const elapsed = elapsedOf(child.run);
   return [`Sidekick ${child.name} ${STATES[child.run.state].word}${elapsed ? ` after ${elapsed}` : ""}.`, "",
-    child.run.result ?? "(no result)", "",
-    ...(child.run.resultFile ? [`Result file (the final answer only; read this, not the transcript): ${child.run.resultFile}`] : []),
-    `Transcript (the whole child session, large; read it only to audit the child's steps): ${child.sessionPath}`].join("\n");
+    block(child, child.run.result ?? "(no result)"), "",
+    ...(child.run.resultFile ? [`Saved copy of the text above: ${child.run.resultFile}`] : []),
+    `Full session transcript: ${child.sessionPath}`].join("\n");
 }

@@ -45,7 +45,7 @@ const active = (state: RunState) => state === "starting" || state === "running" 
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
 const STOPPED = "Stopped by parent.";
 const DETACHED = "Parent session detached. Continue explicitly; no automatic replay; previous external effects may be unknown.";
-const CHILD_BRIEFING = "Your final message is your result for the parent, who sees nothing else you did: make it self-contained, with evidence (paths, line numbers, commands) and what is still open. Do not delegate to other agents.";
+const CHILD_BRIEFING = "Your final message is your result for the parent, who sees nothing else you did: make it self-contained, with evidence (paths, line numbers, commands) and what is still open. If you are blocked, call ask_parent; do not end your final message with a question. Do not delegate to other agents.";
 /** A leading "/" would run a Pi command or skill in the child, so every parent text gets a label first. */
 export const frame = (kind: string, text: string) => `${kind}:\n${text}`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);

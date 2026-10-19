@@ -108,7 +108,7 @@ interface is added; see the implementation brief.
 ## Constraints audit
 
 Provenance: the pre-implementation scope at commit `516e86c1682a4d82ea80ab1932e16261d9e2cc9a`
-and the later corrections in `../handoff-v1-corrections.md`. The full original
+and the operator's later corrections recorded in this table. The full original
 exploration transcript is unavailable; this audit cannot establish intent beyond
 those records. Existing source is evidence of implementation, not user approval.
 
