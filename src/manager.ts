@@ -260,6 +260,7 @@ export class Manager {
   private async open(child: Child): Promise<void> {
     const record = child.record;
     if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
+    if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}`);
     const lock = `${record.sessionPath}.lock`;
     let fd: number;
     try { fd = openSync(lock, "wx", 0o600); }

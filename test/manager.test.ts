@@ -188,6 +188,17 @@ test("a child whose working directory was removed fails with a clear error and l
   assert.deepEqual(await locks(), []);
 });
 
+test("a child whose folder was removed fails with a clear error and leaves no lock", async (t) => {
+  const h = await harness("hold");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch("w");
+  await h.manager.stop(child.id);
+  await rm(dirname(child.sessionPath), { recursive: true });
+  await assert.rejects(h.manager.send("w", "Again"), /Child session folder no longer exists: /);
+  assert.equal(h.manager.snapshot()[0].run.state, "failed");
+  assert.deepEqual((await readdir(h.directory, { recursive: true })).filter((name) => name.endsWith(".lock")), []);
+});
+
 test("a result file that cannot be written does not fail the run; the cut result points to the transcript", { skip: process.getuid?.() === 0 }, async (t) => {
   const h = await harness("long-result");
   let folder = h.directory;
@@ -201,8 +212,9 @@ test("a result file that cannot be written does not fail the run; the cut result
   assert.equal(done.run.resultFile, undefined);
   assert(done.run.result!.endsWith(`[Truncated. Full result: ${done.sessionPath}]`));
   assert.equal(done.run.result!.indexOf("\n[Truncated"), 24_000);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(h.deliveries.length, 1);
+  await chmod(folder, 0o700);
+  await h.manager.shutdown();
+  assert.equal(h.deliveries.length, 1, "closing the child does not deliver a second time");
 });
 
 test("explicit stop wins a race with final result extraction", async (t) => {
