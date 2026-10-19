@@ -25,5 +25,9 @@ This repository contains a small personal Pi subagent extension and its research
   Verify the version in the working environment.
 - Test observable behavior, especially questions, delivery, cancellation, and resume.
   Report uncertainty after non-trivial changes. Use subagents only when explicitly requested.
+- Run `npm test` and `npm run test:tui` in a clean environment. A child session has
+  `PI_SIDEKICKS_CHILD` set, and the nested `pi` processes in e2e/tui tests inherit it, which
+  disables the extension and makes tests time out. Prefix the command with
+  `env -u PI_SIDEKICKS_CHILD -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_CHILD_AGENT`.
 - Use isolated agent directories and local scripted providers for tests. Obtain
   permission before a billable provider/MCP smoke or changing operator settings.
