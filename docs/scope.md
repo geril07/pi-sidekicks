@@ -132,7 +132,7 @@ those records. Existing source is evidence of implementation, not user approval.
 | Python terminal driver | Assistant convenience only. Replaced with TypeScript and Node built-ins; tmux coverage stays optional. |
 
 Separate engineering bounds remain: 30-second RPC command deadlines (not task
-timeouts), an 8 MiB RPC-line bound, 8,000-character questions, 100-character names,
+timeouts), a 64 Mi UTF-16-code-unit RPC-line bound, 8,000-character questions, 100-character names,
 24,000-character result summaries (the full result of a completed run is also saved as `result-N.md` in the child's own folder), and ten visible
 widget rows with navigation. Their exact values are assistant-selected safeguards,
 not requirements or consequences of the typical child count. This correction does

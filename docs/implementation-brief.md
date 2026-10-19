@@ -90,6 +90,12 @@ completed/failed follow-ups and running guidance are unchanged.
 Use a small raw JSONL transport: public `RpcClient` cannot answer extension UI
 requests. Correlate responses by ID because commands can complete out of order.
 Enforce command deadlines and a bounded line size; reject malformed protocol data.
+All records, including `agent_end`, use ordinary JSON parsing with a limit of
+64 Mi UTF-16 code units (67,108,864), excluding LF. Search for LF only within each
+incoming chunk to avoid rescanning a growing record. No field-order-dependent
+skipping is used. The manager ignores `agent_end`; settlement still requires
+`agent_settled`. The limit is not a memory budget: strings, parsed objects, and
+transient copies consume additional memory. Larger records remain transport faults.
 
 ### Settlement and delivery
 

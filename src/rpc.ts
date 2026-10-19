@@ -29,12 +29,18 @@ export class RpcConnection extends EventEmitter {
     });
     const decoder = new StringDecoder("utf8");
     this.process.stdout.on("data", (chunk: Buffer) => {
-      this.buffer += decoder.write(chunk);
-      let end: number;
-      while ((end = this.buffer.indexOf("\n")) >= 0) {
-        const line = this.buffer.slice(0, end);
-        this.buffer = this.buffer.slice(end + 1);
-        if (line.length > 8 * 1024 * 1024) return this.fail(new Error("RPC line exceeds 8 MiB"));
+      const text = decoder.write(chunk);
+      let start = 0;
+      while (start < text.length) {
+        const end = text.indexOf("\n", start);
+        this.buffer += text.slice(start, end < 0 ? text.length : end);
+        if (this.buffer.length > 64 * 1024 * 1024) {
+          return this.fail(new Error("RPC line exceeds 64 Mi UTF-16 code units"));
+        }
+        if (end < 0) break;
+        start = end + 1;
+        const line = this.buffer;
+        this.buffer = "";
         if (!line.trim()) continue;
         let message: RpcResponse | RpcEvent;
         try { message = JSON.parse(line); }
@@ -51,7 +57,6 @@ export class RpcConnection extends EventEmitter {
           this.emit("event", message);
         }
       }
-      if (this.buffer.length > 8 * 1024 * 1024) this.fail(new Error("RPC line exceeds 8 MiB"));
     });
     this.process.stderr.resume();
     this.process.stdin.on("error", (error) => this.fail(error));
