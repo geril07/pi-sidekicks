@@ -50,6 +50,7 @@ export default function fixture(pi: ExtensionAPI): void {
     description: "Test-only side effect",
     async execute(_id, _args, signal) {
       log({ effect: true });
+      if (scenario === "busy-parent") await delay(100);
       if (["nonblocking", "lifecycle"].includes(scenario) && process.env.SIDEKICKS_TEST_GATE) {
         while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10, undefined, { signal });
       }
@@ -99,6 +100,14 @@ export default function fixture(pi: ExtensionAPI): void {
       }
       return fauxAssistantMessage("Parent received the tool response or child delivery.");
     }
+    if (scenario === "busy-parent") {
+      if (process.env.PI_SIDEKICKS_CHILD) return fauxAssistantMessage("Busy-parent child result.");
+      if (state.callCount === 1) return fauxAssistantMessage(fauxToolCall("subagent", { action: "launch", agent: "worker", task: "Finish quickly", name: "one" }), { stopReason: "toolUse" });
+      if (JSON.stringify(context.messages).includes("Busy-parent child result.")) return fauxAssistantMessage("FINAL: result arrived while busy.");
+      // The parent keeps calling tools; a delivery that waits for the run to end never arrives within the cap.
+      return state.callCount > 40 ? fauxAssistantMessage("GAVE UP: no result while busy.")
+        : fauxAssistantMessage(fauxToolCall("effect", {}, { id: `busy-${state.callCount}` }), { stopReason: "toolUse" });
+    }
     if (scenario === "batch-parent") {
       if (process.env.PI_SIDEKICKS_CHILD && process.env.SIDEKICKS_TEST_GATE) {
         while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10);
@@ -139,6 +148,6 @@ export default function fixture(pi: ExtensionAPI): void {
     }
     return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
   };
-  faux.setResponses(Array.from({ length: ["model-switch", "lifecycle"].includes(scenario) ? 60 : 12 }, () => script));
+  faux.setResponses(Array.from({ length: ["model-switch", "lifecycle", "busy-parent"].includes(scenario) ? 60 : 12 }, () => script));
   next?.setResponses(Array.from({ length: 12 }, () => script));
 }

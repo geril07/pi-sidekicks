@@ -135,7 +135,9 @@ Classify only at `agent_settled`, never from prompt acceptance, `agent_end`, or 
 - Exit before settlement means interruption, even with exit code zero.
 
 Questions and outcomes are custom messages, delivered with `triggerTurn` and
-`deliverAs: "followUp"`. Check runtime ownership immediately before submission;
+`deliverAs: "steer"`. A busy parent receives them after its current assistant turn and tool calls;
+`followUp` would hold them until the parent's whole run ends, so a long-running parent
+could not react to a finished child or answer a blocking question. Check runtime ownership immediately before submission;
 deduplicate question events and terminal outcomes. Progress only updates the widget.
 Bound stored/delivered result text and point to the saved transcript for the rest.
 Nonblocking question notifications are immediate, without waiting for settlement;

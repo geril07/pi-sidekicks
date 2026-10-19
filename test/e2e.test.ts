@@ -147,6 +147,22 @@ test("herdr:busy stays raised while a child runs after the parent turn ends and 
   assert(wake > 0 && events.indexOf("busy:false") > wake, `busy must drop after the wake turn starts: ${events.join(",")}`);
 });
 
+test("a result reaches a parent that is still calling tools, instead of waiting for its run to end", { timeout: 30_000 }, async (t) => {
+  const h = await isolated("busy-parent");
+  const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+    "--session", join(h.dir, "parent.jsonl"), "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] }, { cwd: h.dir, env: h.env });
+  t.after(() => rpc.stop());
+  await rpc.request({ type: "prompt", message: "Launch one child and keep working." });
+  const deadline = performance.now() + 20_000;
+  while ((await rpc.request({ type: "get_state" })).isStreaming) {
+    assert(performance.now() < deadline, "Parent run did not finish");
+    await delay(50);
+  }
+  const text = JSON.stringify((await rpc.request({ type: "get_entries" })).entries);
+  assert.match(text, /FINAL: result arrived while busy\./);
+  assert.doesNotMatch(text, /GAVE UP/);
+});
+
 async function isolated(scenario: string) {
   const dir = await mkdtemp("/tmp/opencode/sidekicks-e2e-");
   const agent = join(dir, "agent");

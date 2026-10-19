@@ -138,7 +138,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
         const details: GroupDetails = { kind: "group", members: members.map((child) => ({ child: child.name, state: child.run.state,
           body: child.run.state === "completed" && !child.run.delivered ? child.run.result ?? "" : child.run.state === "cancelled" ? "Stopped by parent." : "Already reported." })) };
         pi.sendMessage({ customType: "sidekicks:group", content: groupText(members), display: true, details },
-          { triggerTurn: true, deliverAs: "followUp" });
+          { triggerTurn: true, deliverAs: "steer" });
       },
       deliver: (child, kind, question) => {
         if (current !== runtime) return;
@@ -146,7 +146,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
         const details: DeliveryDetails = { kind, child: child.name, state: child.run.state, questionId: question?.id, blocking,
           elapsed: elapsedOf(child.run), body: kind === "question" ? question!.text : child.run.result ?? "" };
         pi.sendMessage({ customType: `sidekicks:${kind}`, content: deliveryText(child, kind, question, blocking), display: true, details },
-          { triggerTurn: true, deliverAs: "followUp" });
+          { triggerTurn: true, deliverAs: "steer" });
       },
     });
     runtime.widget = new StatusWidget(() => runtime.manager.snapshot());
