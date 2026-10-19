@@ -42,6 +42,15 @@ test("foreign children show saved ownership without a live clock or a reply inst
   assert.doesNotMatch(text, /asks|old-question|interrupted|12s/);
 });
 
+test("status carries turns, tool calls and context usage", () => {
+  const tracked = { ...child, run: { ...child.run, turns: 38, tools: 47 },
+    contextUsage: { tokens: 137_700, percent: 13.77, contextWindow: 1_000_000 } };
+  assert.match(describeChild(tracked), /— running 1\ds · 38 turns · 47 tools · ctx 137700\/1000000: read src\/a\.ts$/);
+  assert.match(describeChild({ ...tracked, contextUsage: { tokens: null, percent: null, contextWindow: 1_000_000 } }),
+    /ctx unknown\/1000000/, "post-compaction telemetry reads as unknown, not as zero");
+  assert.doesNotMatch(describeChild({ ...child, run: { ...child.run, turns: 0, tools: 0 } }), /ctx|turns 0/, "no context window, no ctx field");
+});
+
 test("the parent is told which file holds the answer and which holds the whole session", () => {
   const done = { ...child, run: { ...child.run, state: "completed" as const, endedAt: Date.now(), result: "Found it.", resultFile: "/c.result.md" } };
   const delivery = deliveryText(done, "result");

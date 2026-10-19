@@ -61,7 +61,16 @@ export function describeChild(child: ChildSnapshot): string {
     : isActive(run.state) ? child.connected ? child.activity : "detached" : preview(run.result ?? "", 160);
   const questions = child.questions?.length ? `; ${child.questions.length} open non-blocking question(s): ${child.questions.map((q) => q.id).join(", ")}` : "";
   const file = !isActive(run.state) && run.resultFile ? ` (result file: ${run.resultFile})` : "";
-  return `${child.name} (${child.agent}, ${modelLabel(child)}${child.cwd ? `, cwd ${child.cwd}` : ""}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${detail ? `: ${detail}` : ""}${file}${questions}`;
+  const measurement = progress(child);
+  return `${child.name} (${child.agent}, ${modelLabel(child)}${child.cwd ? `, cwd ${child.cwd}` : ""}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${measurement ? ` · ${measurement}` : ""}${detail ? `: ${detail}` : ""}${file}${questions}`;
+}
+
+/** Raw numbers, because the parent model compares them and the widget owns its own formatting. */
+function progress(child: ChildSnapshot): string {
+  const usage = child.contextUsage;
+  return [child.run.turns === undefined ? "" : `${child.run.turns} turns`,
+    child.run.tools === undefined ? "" : `${child.run.tools} tools`,
+    usage ? `ctx ${usage.tokens ?? "unknown"}/${usage.contextWindow}` : ""].filter(Boolean).join(" · ");
 }
 
 export function statusText(children: ChildSnapshot[], agents: Agent[]): string {
