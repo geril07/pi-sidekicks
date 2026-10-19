@@ -23,6 +23,16 @@ test("widget is hidden without children and summarizes states once they exist", 
   assert.deepEqual(widget.render(120), []);
 });
 
+test("a foreign child's row and summary identify another window, not live progress or an interruption", () => {
+  const foreign = { ...child("foreign"), external: true, connected: false };
+  const widget = new StatusWidget(() => [foreign]);
+  assert.match(widget.render(160)[0], /1 in another window/);
+  assert.doesNotMatch(widget.render(160)[0], /1 running|failed/);
+  widget.toggle();
+  assert.match(widget.render(160)[1], /another window \(saved running\)/);
+  assert.doesNotMatch(widget.render(160)[1], /detached|interrupted|1m0\ds/);
+});
+
 test("rows show name, agent, model, state and elapsed time; a failure keeps its reason; Enter shows only the storage folder", () => {
   const children = [child("one"), child("two"), child("three")];
   children[0].name = "名字".repeat(40) + "\x1b]52;bad\x07";

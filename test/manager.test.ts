@@ -224,8 +224,8 @@ test("a child whose working directory was removed fails with a clear error and l
   await rm(gone, { recursive: true });
   await assert.rejects(h.manager.send("w", "Again"), /Working directory no longer exists: .*\/gone$/);
   const after = h.manager.snapshot()[0];
-  assert.equal(after.run.state, "failed");
-  assert.match(after.run.result!, /Working directory no longer exists/);
+  assert.equal(after.run.state, "cancelled", "a rejected follow-up must leave the previous run intact");
+  assert.equal(after.run.number, 1);
   const locks = async () => (await readdir(h.directory, { recursive: true })).filter((name) => name.endsWith(".lock"));
   assert.deepEqual(await locks(), []);
   await assert.rejects(h.manager.launch({ agent: "x", instructions: "Do the task", name: "x", task: "Work", model: "local/scripted", thinking: "off", cwd: gone }), /Working directory no longer exists/);
@@ -239,7 +239,7 @@ test("a child whose folder was removed fails with a clear error and leaves no lo
   await h.manager.stop(child.id);
   await rm(dirname(child.sessionPath), { recursive: true });
   await assert.rejects(h.manager.send("w", "Again"), /Child session folder no longer exists: /);
-  assert.equal(h.manager.snapshot()[0].run.state, "failed");
+  assert.equal(h.manager.snapshot()[0].run.state, "cancelled");
   assert.deepEqual((await readdir(h.directory, { recursive: true })).filter((name) => name.endsWith(".lock")), []);
 });
 
@@ -303,6 +303,31 @@ test("reload invalidates delivery and restores interrupted work without rerunnin
   assert.equal(followed.sessionPath, child.sessionPath);
   assert.notEqual(followed.run.id, child.run.id);
   await assert.rejects(h.manager.send(child.id, "old parent"), /no longer active/);
+});
+
+test("checkpoint restore needs an acknowledgement, not just a handled slash command", async (t) => {
+  const h = await harness("bad-restore");
+  t.after(() => h.manager.shutdown());
+  await assert.rejects(h.launch(), /did not restore its saved checkpoint/);
+  assert.equal(h.manager.snapshot()[0].run.state, "failed");
+  await assert.rejects(readFile(join(h.directory, "prompts.jsonl")), { code: "ENOENT" });
+});
+
+test("a foreign held batch is not delivered or persisted by the second manager", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch(["complete", "hold"].map((outcome) => ({ agent: "w", name: outcome,
+    instructions: "Work", task: `outcome=${outcome}`, model: "local/scripted", thinking: "off" })));
+  await h.waitFor(() => h.manager.snapshot().some((child) => child.run.state === "completed"));
+  const before = JSON.stringify([...h.records.values()]);
+  const other = new Manager({ ...h.options, restored: [...h.records.values()] });
+  t.after(() => other.shutdown());
+  assert(other.snapshot().every((child) => child.external));
+  other.releaseHeld();
+  await other.shutdown();
+  assert.equal(JSON.stringify([...h.records.values()]), before);
+  assert.equal(h.groups.length, 0);
+  assert.equal(h.manager.snapshot().find((child) => child.name === "hold")!.run.state, "running");
 });
 
 test("a second Pi instance cannot become a concurrent writer", async (t) => {

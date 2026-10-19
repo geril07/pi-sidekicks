@@ -201,6 +201,8 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 
   Small registry records are stored in the owning parent's session, not a database.
   A blocking answer or running guidance is not a new run, so it has no task file.
+  Artifact numbers span all branches and are not reused after tree navigation;
+  existing files are never replaced.
 - A completed run writes its full result to `result-N.md` (mode 0600, no front matter,
   so the file can be moved or passed on as it is). Failed, stopped and interrupted runs
   have no result file; their short status text is in the delivery. Delivered results and
@@ -215,9 +217,20 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 - The fixed ceiling is 64 active assignments; excess work is rejected, not queued.
   Idle processes remain alive and do not consume assignment slots. Each child is a
   full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
-- Quit, reload, new/resume/fork, and tree navigation detach the old runtime and stop
-  owned children. Returning to the owning session permits explicit follow-up; an
-  interrupted assignment is never replayed automatically.
+- Quit, reload, new/resume/fork, and actual tree navigation detach the old runtime
+  and stop only its owned children. Cancelled/no-op tree navigation leaves them alone.
+  Each saved child state includes a conversation checkpoint: after tree navigation,
+  explicit follow-up starts an alternative child branch without later messages from
+  the abandoned path. An interrupted assignment is never replayed automatically.
+- A second window on the same parent file shows foreign children as **managed by
+  another window**, with saved status, not live progress. It cannot send/answer/stop
+  them or change their files/state, even on shutdown or tree navigation. Once the
+  owner releases a child, explicit `send` may continue from this window's checkpoint.
+  This is not live synchronization. New session IDs from clone/fork do not adopt
+  children; `pi --fork <path|id>` in another window leaves the original work running.
+- Checkpoints are small custom Pi entries; session format and directory layout stay
+  unchanged. Old registry snapshots without child checkpoints are not restored or
+  migrated. Their transcripts and result files are left untouched.
 - Stop/cancellation is not rollback. Effects may already have happened. Process
   loss before settlement is interruption, not success.
 - A session writer lock prevents two parent instances reopening the same child.

@@ -39,6 +39,7 @@ function restored(ctx: ExtensionContext): ChildRecord[] {
     if (!record || typeof record.id !== "string" || typeof record.ownerSessionId !== "string"
       || typeof record.instructions !== "string" || typeof record.sessionPath !== "string"
       || typeof record.name !== "string" || typeof record.agent !== "string" || typeof record.cwd !== "string"
+      || (record.sessionLeafId !== null && typeof record.sessionLeafId !== "string")
       || typeof record.model !== "string" || !thinkingLevels.includes(record.thinking)
       || !record.run || typeof record.run.id !== "string" || !Number.isInteger(record.run.number) || typeof record.run.state !== "string") continue;
     records.set(record.id, record);
@@ -56,7 +57,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
   const syncBusy = () => {
     busyCheck ??= setTimeout(() => {
       busyCheck = undefined;
-      emitBusy(current?.manager.snapshot().some((child) => child.run.state === "starting" || child.run.state === "running") ?? false);
+      emitBusy(current?.manager.snapshot().some((child) => !child.external && (child.run.state === "starting" || child.run.state === "running")) ?? false);
     }, 0);
   };
   const emitBusy = (next: boolean) => {

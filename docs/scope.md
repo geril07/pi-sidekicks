@@ -28,6 +28,15 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
   become a low concurrency limit; the user suggested a ceiling around 64.
 - Keep test drivers in TypeScript, including the optional real-terminal smoke.
 - Continue a child's conversation rather than rediscovering prior work in a new agent.
+- Tree navigation restores the child's saved conversation checkpoint, so a follow-up
+  creates an alternative child branch without later messages from the abandoned path.
+  Preserve all task/result artifacts across branches; external effects are not rolled back.
+- Two Pi processes may open one parent session: children owned by the other process
+  are read-only, labelled as another window with saved status, and never stopped,
+  answered, delivered, or persisted by this runtime. Explicit continuation may acquire
+  a released child; there is no automatic takeover. New parent-session IDs (clone/fork)
+  do not inherit child ownership. No backward compatibility or migration is required
+  for registry snapshots predating child checkpoints.
 - MCP adapter and the operator's provider extensions must work inside children.
 - Completion delivery should not require repetitive status polling or shell/file inspection.
 - A compact live status widget appears near the main editor when relevant. The
@@ -123,7 +132,7 @@ those records. Existing source is evidence of implementation, not user approval.
 | This package's parent tools suppressed in children (the briefing no longer tells children not to delegate; removed 2026-10-19 at the operator's request) | Assistant recursion/scope policy. Nested delegation was only a proposed exclusion. Retained for v1, not a user ban on all delegation tools. |
 | Tool description forbids delegation unless explicitly requested | Coding-agent instructions were copied into product policy without a scope requirement. Removed from the tool description; actual parent instructions still govern delegation. |
 | Parent and child tools are model-only | Assistant execution-interface choice, not a user prohibition on codemode/scripts. Retained. |
-| Stop closes the process; reload/new/resume/fork/tree stop all children | Assistant lifecycle decisions. Original scope asked for explicit tested behavior, not these exact policies. Retained. |
+| Stop closes the process; reload/new/resume/fork/tree stop children | Initially assistant lifecycle choices. The later tree/multi-window request confirms stopping only this runtime's owned processes. Tree restores child checkpoints; another window's children remain read-only and keep running. Clone/fork new session IDs do not adopt children. |
 | No launch queue or cross-parent adoption | Assistant simplifications, not recorded user requirements. Retained. Stale-lock recovery was added 2026-10-18 at the operator's request, limited to locks whose recorded PIDs are dead. The agreed boot-ID correction also replaces locks from an earlier known Linux boot, even if a PID was reused; unknown boot IDs keep PID checks. |
 | Batch launch and delivery | Agreed extension of the existing launch action: tasks plus together (default) or each delivery. Validate the whole batch before concurrent startup; derive membership from group IDs on current runs, hold completions, report failures/questions immediately, suppress grouped stop notices, and release held results on explicit follow-up or restore. No scheduler, shared labels, auto-cancellation, or extra tools. |
 | Child storage layout, prompt files, message labels | Assistant choices (one folder per parent session with flat UUID-named files; result files with front matter; a three-paragraph child briefing; `Sidekicks task:` labels). Changed 2026-10-19 at the operator's request, without compatibility with the old layout: one folder per child under `<agentDir>/sidekick-sessions/` (`session.jsonl`, `task-N.md`, plain `result-N.md` for completed runs only), kept apart from the `sidekicks/` definitions so a dotfiles `.gitignore` can ignore data without hiding definitions, the system-prompt file dropped (passed inline), a one-sentence briefing, and short `Task:`/`Guidance:`/`Follow-up:` labels kept only as the leading-slash guard. |

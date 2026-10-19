@@ -3,12 +3,38 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 export const QUESTION_ENTRY = "sidekicks:question";
+export const CHECKPOINT_ENTRY = "sidekicks:checkpoint";
 
 export default function childExtension(pi: ExtensionAPI): void {
   if (!process.env.PI_SIDEKICKS_CHILD) return;
   let reserved: string | undefined;
   let pending: { id: string; text: string } | undefined;
   let batchTerminates = true;
+
+  pi.registerCommand("sidekicks-restore", {
+    description: "Internal restoration of a saved child conversation checkpoint",
+    handler: async (args, ctx) => {
+      const { leafId, requestId } = JSON.parse(args) as { leafId: string | null; requestId: string };
+      if ((leafId !== null && typeof leafId !== "string") || typeof requestId !== "string" || !ctx.isIdle()) {
+        throw new Error("Invalid checkpoint restoration or child is not idle");
+      }
+      const entries = ctx.sessionManager.getEntries();
+      const target = leafId === null
+        ? entries.find((entry) => entry.type === "custom" && entry.customType === CHECKPOINT_ENTRY && (entry.data as { origin?: boolean })?.origin)
+        : ctx.sessionManager.getEntry(leafId);
+      if (target) {
+        if (target.type !== "custom" || target.customType !== CHECKPOINT_ENTRY) throw new Error("Invalid child checkpoint");
+        if ((await ctx.navigateTree(target.id, { summarize: false })).cancelled) throw new Error("Child checkpoint restoration cancelled");
+      } else if (leafId !== null || entries.some((entry) => entry.type === "message")) {
+        throw new Error("Child checkpoint is missing; old sessions are not migrated");
+      }
+      pi.appendEntry(CHECKPOINT_ENTRY, { requestId, ...(!target ? { origin: true } : {}) });
+    },
+  });
+  // These boundaries have no unresolved tool-call batch; snapshots never point into streamed output.
+  const checkpoint = () => { pi.appendEntry(CHECKPOINT_ENTRY, {}); };
+  pi.on("message_start", (event) => { if (event.message.role === "assistant") checkpoint(); });
+  pi.on("agent_settled", checkpoint);
 
   pi.registerCommand("sidekicks-answer", {
     description: "Internal correlated answer delivery without starting a turn",
@@ -73,6 +99,7 @@ export default function childExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("turn_end", (_event, ctx) => {
+    checkpoint();
     if (!pending) return;
     if (ctx.hasPendingMessages() || !batchTerminates) {
       pi.appendEntry(QUESTION_ENTRY, { action: "withdrawn", id: pending.id });

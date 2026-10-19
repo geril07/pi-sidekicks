@@ -38,11 +38,14 @@ export const elapsedOf = (run: Run, now = Date.now()) =>
 export const modelLabel = (child: Pick<ChildSnapshot, "model" | "thinking">) => `${child.model.split("/").pop()}:${child.thinking}`;
 
 export function summary(style: Style, children: ChildSnapshot[]): string {
-  const count = (states: RunState[]) => children.filter((child) => states.includes(child.run.state)).length;
+  const count = (states: RunState[]) => children.filter((child) => !child.external && states.includes(child.run.state)).length;
   const parts: [RunState, number, string][] = [["running", count(["starting", "running"]), "running"],
     ["waiting", count(["waiting"]), "waiting"], ["failed", count(["failed", "interrupted"]), "failed"],
     ["completed", count(["completed"]), "done"], ["cancelled", count(["cancelled"]), "stopped"]];
-  return parts.filter(([, n]) => n > 0).map(([state, n, word]) => `${stateGlyph(style, state)} ${style.fg(STATES[state].tone, `${n} ${word}`)}`).join(style.fg("dim", " · "));
+  const labels = parts.filter(([, n]) => n > 0).map(([state, n, word]) => `${stateGlyph(style, state)} ${style.fg(STATES[state].tone, `${n} ${word}`)}`);
+  const external = children.filter((child) => child.external).length;
+  if (external) labels.push(style.fg("muted", `${external} in another window`));
+  return labels.join(style.fg("dim", " · "));
 }
 
 const preview = (text: string, length: number) => {
@@ -53,6 +56,7 @@ const preview = (text: string, length: number) => {
 /** One line the model can scan: handle first, because it is the argument of every follow-up call. */
 export function describeChild(child: ChildSnapshot): string {
   const run = child.run;
+  if (child.external) return `${child.name} (${child.agent}, ${modelLabel(child)}) — managed by another window; saved status: ${STATES[run.state].word}${run.resultFile ? ` (result file: ${run.resultFile})` : ""}. send/answer/stop are unavailable while it owns the child.`;
   const detail = run.question ? `asks ${run.question.id}: ${preview(run.question.text, 160)}`
     : isActive(run.state) ? child.connected ? child.activity : "detached" : preview(run.result ?? "", 160);
   const questions = child.questions?.length ? `; ${child.questions.length} open non-blocking question(s): ${child.questions.map((q) => q.id).join(", ")}` : "";

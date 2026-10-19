@@ -45,7 +45,7 @@ export class StatusWidget implements Component {
       return this;
     }, { placement: "belowEditor" });
     this.unsubscribe = ctx.ui.onTerminalInput((data) => this.handleKey(data));
-    this.timer = setInterval(() => { if (this.expanded && this.snapshot().some((child) => isActive(child.run.state))) this.refresh(); }, REFRESH_MS);
+    this.timer = setInterval(() => { if (this.expanded && this.snapshot().some((child) => !child.external && isActive(child.run.state))) this.refresh(); }, REFRESH_MS);
     this.timer.unref();
   }
 
@@ -89,8 +89,9 @@ export class StatusWidget implements Component {
   /** Live work first, in launch order so rows stay put; finished conversations after, newest first. */
   private ordered(): ChildSnapshot[] {
     const finishedAt = (child: ChildSnapshot) => child.run.endedAt ?? child.run.startedAt ?? 0;
-    return [...this.snapshot()].sort((a, b) => Number(isActive(b.run.state)) - Number(isActive(a.run.state))
-      || (isActive(a.run.state) ? 0 : finishedAt(b) - finishedAt(a)));
+    const live = (child: ChildSnapshot) => !child.external && isActive(child.run.state);
+    return [...this.snapshot()].sort((a, b) => Number(live(b)) - Number(live(a))
+      || (live(a) ? 0 : finishedAt(b) - finishedAt(a)));
   }
 
   private selected(children = this.ordered()): number {
@@ -125,11 +126,12 @@ export class StatusWidget implements Component {
 
   private row(child: ChildSnapshot, selected: boolean, width: number): string {
     const { style } = this;
-    const state = child.connected || !isActive(child.run.state) ? stateWord(style, child.run.state) : style.fg("warning", `detached/${child.run.state}`);
+    const state = child.external ? style.fg("muted", `another window (saved ${child.run.state})`)
+      : child.connected || !isActive(child.run.state) ? stateWord(style, child.run.state) : style.fg("warning", `detached/${child.run.state}`);
     const agent = child.agent === child.name ? "" : `${child.agent} `;
     const reason = ["failed", "interrupted"].includes(child.run.state) ? child.run.result?.split("\n").find((line) => line.trim()) ?? "" : "";
-    const left = `${selected ? style.fg("accent", ">") : " "} ${stateGlyph(style, child.run.state)} ${style.bold(plain(child.name))} ${style.fg("dim", `${plain(agent)}${plain(modelLabel(child))}`)} ${state}${reason ? style.fg("muted", ` · ${plain(reason)}`) : ""}`;
-    const elapsed = elapsedOf(child.run);
+    const left = `${selected ? style.fg("accent", ">") : " "} ${child.external ? style.fg("muted", "↗") : stateGlyph(style, child.run.state)} ${style.bold(plain(child.name))} ${style.fg("dim", `${plain(agent)}${plain(modelLabel(child))}`)} ${state}${reason ? style.fg("muted", ` · ${plain(reason)}`) : ""}`;
+    const elapsed = child.external ? undefined : elapsedOf(child.run);
     const compact = (value: number) => value < 1000 ? String(Math.round(value)) : `${Number((value / 1000).toFixed(1))}k`;
     const usage = child.contextUsage;
     const context = `${usage?.tokens == null ? "—" : compact(usage.tokens)}/${usage ? compact(usage.contextWindow) : "—"}`;

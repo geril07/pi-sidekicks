@@ -34,6 +34,14 @@ test("model-facing text names the child and tells the parent how to reply", () =
   assert.match(statusText([child], [{ name: "explorer", description: "d", instructions: "" }]), /Children:\n- explorer-1.*\nAgents: explorer/);
 });
 
+test("foreign children show saved ownership without a live clock or a reply instruction", () => {
+  const text = describeChild({ ...child, connected: false, external: true,
+    run: { ...child.run, state: "waiting", question: { id: "old-question", text: "Which option?" } } });
+  assert.match(text, /managed by another window; saved status: waiting/);
+  assert.match(text, /send\/answer\/stop are unavailable/);
+  assert.doesNotMatch(text, /asks|old-question|interrupted|12s/);
+});
+
 test("the parent is told which file holds the answer and which holds the whole session", () => {
   const done = { ...child, run: { ...child.run, state: "completed" as const, endedAt: Date.now(), result: "Found it.", resultFile: "/c.result.md" } };
   const delivery = deliveryText(done, "result");

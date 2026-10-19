@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ContextUsage, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
@@ -9,10 +9,10 @@ import { parseModel } from "./agents.ts";
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { groupId?: string; id: string; /** 1-based position in the child's conversation; names the run's task and result files. */ number: number; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number; turns?: number; tools?: number }
+export interface Run { groupId?: string; id: string; /** Artifact number across all branches; never reuse an existing task/result filename. */ number: number; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number; turns?: number; tools?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
-  cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
+  cwd: string; sessionPath: string; sessionLeafId: string | null; model: string; thinking: Thinking; run: Run;
   contextUsage?: ContextUsage;
   questions?: (Question & { runId: string })[];
 }
@@ -20,15 +20,15 @@ export interface ChildSnapshot {
   id: string; name: string; agent: string; model: string; thinking: Thinking;
   /** Only set when the child works somewhere other than the parent's directory. */
   cwd?: string;
-  run: Run; connected: boolean; activity: string; sessionPath: string;
+  run: Run; connected: boolean; external?: boolean; activity: string; sessionPath: string;
   contextUsage?: ContextUsage;
   questions?: (Question & { runId: string })[];
 }
 interface Child {
   record: ChildRecord; rpc?: RpcConnection; release?: () => void; closing?: Promise<void>;
   stopRequested: boolean; operation: boolean; settling: boolean; activity: string;
-  controller: AbortController; lastError?: string; lastAborted?: boolean;
-  seenQuestions: Set<string>; contextRequest: number;
+  controller: AbortController; lastError?: string; lastAborted?: boolean; lockContents?: string;
+  seenQuestions: Set<string>; contextRequest: number; restoredRequest?: string;
 }
 export interface ManagerOptions {
   ownerSessionId: string; directory: string; cwd: string; trusted: boolean;
@@ -79,16 +79,20 @@ function removeDeadLock(lock: string): boolean {
   let contents: string;
   try { contents = readFileSync(lock, "utf8"); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  if (!deadWriter(contents)) return false;
+  // Re-read so a lock another parent just replaced is not removed.
+  if (readFileSync(lock, "utf8") !== contents) return false;
+  unlinkSync(lock);
+  return true;
+}
+
+function deadWriter(contents: string): boolean {
   let owner: { pid?: unknown; childPid?: unknown; bootId?: unknown };
   try { owner = JSON.parse(contents); } catch { return false; }
   if (!owner || typeof owner !== "object") return false;
   const currentBoot = bootId();
   const rebooted = typeof owner.bootId === "string" && !!owner.bootId && currentBoot !== undefined && owner.bootId !== currentBoot;
-  if (!rebooted && (pidAlive(owner.pid) || (owner.childPid !== undefined && pidAlive(owner.childPid)))) return false;
-  // Re-read so a lock another parent just replaced is not removed.
-  if (readFileSync(lock, "utf8") !== contents) return false;
-  unlinkSync(lock);
-  return true;
+  return rebooted || (!pidAlive(owner.pid) && (owner.childPid === undefined || !pidAlive(owner.childPid)));
 }
 
 export class Manager {
@@ -102,13 +106,10 @@ export class Manager {
     for (const saved of options.restored ?? []) {
       if (saved.ownerSessionId !== options.ownerSessionId || !/^[\da-f-]{36}$/.test(saved.id)) continue;
       if (saved.sessionPath !== join(options.directory, saved.id, "session.jsonl")) continue;
-      const record = structuredClone(saved);
-      if (active(record.run.state)) {
-        record.run = { ...record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
-          result: DETACHED, delivered: true };
-      }
-      record.questions = [];
-      this.children.set(record.id, this.child(record));
+      if (saved.sessionLeafId !== null && typeof saved.sessionLeafId !== "string") continue;
+      const child = this.child(structuredClone(saved));
+      if (!this.occupied(child)) this.detachRecord(child);
+      this.children.set(saved.id, child);
     }
   }
 
@@ -119,11 +120,27 @@ export class Manager {
 
   snapshot(): ChildSnapshot[] { return [...this.children.values()].map((child) => this.view(child)); }
 
+  private occupied(child: Child): boolean {
+    if (child.release) return false;
+    try { return !deadWriter(readFileSync(`${child.record.sessionPath}.lock`, "utf8")); }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
+  }
+
+  private detachRecord(child: Child): void {
+    const record = child.record;
+    if (active(record.run.state)) record.run = { ...record.run, state: "interrupted", endedAt: Date.now(),
+      question: undefined, result: DETACHED, delivered: true };
+    record.questions = [];
+  }
+
   private view(child: Child): ChildSnapshot {
+    const external = this.occupied(child);
+    if (!external && !child.release) this.detachRecord(child);
     const { id, name, agent, model, thinking, run, sessionPath, cwd } = child.record;
     return { id, name, agent, model, thinking, ...(cwd !== this.options.cwd ? { cwd } : {}), run: structuredClone(run), sessionPath,
       contextUsage: structuredClone(child.record.contextUsage),
-      connected: !!child.rpc && !child.closing, activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
+      connected: !!child.rpc && !child.closing, ...(external ? { external: true } : {}),
+      activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
   private assertAlive(): void { if (!this.alive) throw new Error("Parent session is no longer active"); }
@@ -131,6 +148,8 @@ export class Manager {
     this.assertAlive();
     const child = this.children.get(ref) ?? [...this.children.values()].find((candidate) => candidate.record.name === ref);
     if (!child) throw new Error(`Unknown child: ${ref}. Known: ${[...this.children.values()].map((known) => known.record.name).join(", ") || "none"}`);
+    if (this.occupied(child)) throw new Error(`Child session is locked by a live process or an unverified writer: ${child.record.name} is managed by another window (saved status only).`);
+    if (!child.release) this.detachRecord(child);
     return child;
   }
   private uniqueName(wanted: string | undefined, agent: string, taken = new Set([...this.children.values()].map((child) => child.record.name))): string {
@@ -145,13 +164,13 @@ export class Manager {
   }
   private capacity(count = 1): void {
     this.assertAlive();
-    if ([...this.children.values()].filter((child) => active(child.record.run.state)).length + count > MAX_ACTIVE_ASSIGNMENTS) {
+    if ([...this.children.values()].filter((child) => child.closing || (child.release && active(child.record.run.state))).length + count > MAX_ACTIVE_ASSIGNMENTS) {
       throw new Error(`At most ${MAX_ACTIVE_ASSIGNMENTS} assignments may be active, including waiting questions. Stop or finish work before adding this assignment or batch.`);
     }
   }
   private commit(child: Child, persist = true): void {
     if (!this.alive) return;
-    if (persist) this.options.persist(structuredClone(child.record));
+    if (persist && child.release) this.options.persist(structuredClone(child.record));
     this.options.changed();
   }
 
@@ -162,9 +181,10 @@ export class Manager {
     mkdirSync(join(this.options.directory, id), { mode: 0o700 });
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
-      sessionPath: join(this.options.directory, id, "session.jsonl"), model: input.model, thinking: input.thinking,
+      sessionPath: join(this.options.directory, id, "session.jsonl"), sessionLeafId: null, model: input.model, thinking: input.thinking,
       run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 } });
     this.children.set(id, child);
+    this.acquire(child);
     this.commit(child);
     const prompt = frame("Task", input.task);
     this.saveText(child.record, "task-1.md", prompt);
@@ -188,8 +208,8 @@ export class Manager {
       this.capacity();
       const previous = child.record.run;
       const previousView = this.view(child);
-      if (model !== undefined) {
-        const selected = parseModel(model);
+      if (model !== undefined || !child.rpc) {
+        const selected = model === undefined ? { model: child.record.model, thinking: child.record.thinking } : parseModel(model);
         const saved = { model: child.record.model, thinking: child.record.thinking, contextUsage: child.record.contextUsage };
         const connected = !!child.rpc;
         child.operation = true;
@@ -229,7 +249,11 @@ export class Manager {
       if (previous.state === "interrupted" || previous.state === "cancelled") {
         message = `Your previous run was ${previous.state === "cancelled" ? "stopped" : "interrupted"}. You may have made partial changes. Check the current state before repeating anything.\n${message}`;
       }
-      child.record.run = { id: randomUUID(), number: previous.number + 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 };
+      const numbers = readdirSync(dirname(child.record.sessionPath)).flatMap((name) => {
+        const match = /^(?:task|result)-(\d+)\.md$/.exec(name);
+        return match ? [Number(match[1])] : [];
+      });
+      child.record.run = { id: randomUUID(), number: Math.max(previous.number, ...numbers) + 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 };
       this.releaseHeld();
       child.lastError = undefined;
       this.commit(child);
@@ -287,8 +311,8 @@ export class Manager {
       const accepted = await child.rpc!.request({ type: "prompt", message });
       if (accepted.disposition !== "started") throw new Error(`Child prompt was ${accepted.disposition}, not started`);
     } catch (error) {
-      await this.disconnect(child);
       if (this.alive) this.finish(child, child.stopRequested ? "cancelled" : submitted ? "interrupted" : "failed", errorText(error), false);
+      await this.disconnect(child);
       throw error;
     } finally {
       signal?.removeEventListener("abort", abort);
@@ -296,11 +320,9 @@ export class Manager {
     }
   }
 
-  private async open(child: Child, selection = { model: child.record.model, thinking: child.record.thinking }): Promise<void> {
-    const record = child.record;
-    if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
-    if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}`);
-    const lock = `${record.sessionPath}.lock`;
+  private acquire(child: Child): void {
+    if (child.release) return;
+    const lock = `${child.record.sessionPath}.lock`;
     let fd: number;
     try { fd = openSync(lock, "wx", 0o600); }
     catch (error) {
@@ -313,14 +335,21 @@ export class Manager {
         throw retry;
       }
     }
-    const writer = { pid: process.pid, bootId: bootId(), token: randomUUID(), owner: this.options.ownerSessionId };
-    let lockContents = JSON.stringify(writer);
+    child.lockContents = JSON.stringify({ pid: process.pid, bootId: bootId(), token: randomUUID(), owner: this.options.ownerSessionId });
     child.release = () => {
-      try { if (readFileSync(lock, "utf8") === lockContents) unlinkSync(lock); }
+      try { if (readFileSync(lock, "utf8") === child.lockContents) unlinkSync(lock); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     };
-    try { writeFileSync(fd, lockContents); }
+    try { writeFileSync(fd, child.lockContents); }
     finally { closeSync(fd); }
+  }
+
+  private async open(child: Child, selection = { model: child.record.model, thinking: child.record.thinking }): Promise<void> {
+    const record = child.record;
+    if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
+    if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}`);
+    this.acquire(child);
+    const leafId = record.sessionLeafId;
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
       "--append-system-prompt", `${record.instructions.trim()}\n\n${CHILD_BRIEFING}`.trim(), "-e", fileURLToPath(new URL("./child.ts", import.meta.url))];
     if (!this.options.trusted) args.push("--no-approve");
@@ -332,8 +361,8 @@ export class Manager {
         PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: record.agent },
     });
     child.rpc = rpc;
-    lockContents = JSON.stringify({ ...writer, childPid: rpc.process.pid });
-    writeFileSync(lock, lockContents, { mode: 0o600 });
+    child.lockContents = JSON.stringify({ ...JSON.parse(child.lockContents!), childPid: rpc.process.pid });
+    writeFileSync(`${record.sessionPath}.lock`, child.lockContents, { mode: 0o600 });
     rpc.on("event", (event: RpcEvent) => {
       if (this.alive && child.rpc === rpc) this.receive(child, event);
     });
@@ -347,6 +376,10 @@ export class Manager {
       }
       void this.disconnect(child).catch(() => {});
     });
+    const requestId = randomUUID();
+    const accepted = await rpc.request({ type: "prompt", message: `/sidekicks-restore ${JSON.stringify({ leafId, requestId })}` });
+    this.assertAlive();
+    if (accepted.disposition !== "handled" || child.restoredRequest !== requestId) throw new Error("Child did not restore its saved checkpoint");
     await this.configure(child, selection);
   }
 
@@ -409,6 +442,10 @@ export class Manager {
       }).catch(() => {
         if (this.alive && child.rpc === rpc && !child.controller.signal.aborted) rpc.respond({ type: "extension_ui_response", id: event.id, cancelled: true });
       });
+    } else if (event.type === "entry_appended" && event.entry.type === "custom" && event.entry.customType === "sidekicks:checkpoint") {
+      child.record.sessionLeafId = event.entry.id;
+      child.restoredRequest = (event.entry.data as { requestId?: string } | undefined)?.requestId;
+      this.commit(child);
     } else if (event.type === "entry_appended" && run.state !== "starting" && event.entry.type === "custom" && event.entry.customType === "sidekicks:question") {
       const data = event.entry.data as { action?: string; id?: string; text?: string; wait?: boolean } | undefined;
       if (!active(run.state) || child.stopRequested) return;
@@ -517,26 +554,42 @@ export class Manager {
   /** Readable copies of a run's prompt and result, beside the transcript in the child's folder. */
   private saveText(record: ChildRecord, name: string, text: string): string | undefined {
     const path = join(dirname(record.sessionPath), name);
+    const temporary = `${path}.${randomUUID()}.tmp`;
     try {
-      writeFileSync(`${path}.tmp`, `${text}\n`, { mode: 0o600 });
-      renameSync(`${path}.tmp`, path);
+      writeFileSync(temporary, `${text}\n`, { mode: 0o600, flag: "wx" });
+      linkSync(temporary, path);
       return path;
     } catch {
-      // The registry copy and the child transcript still hold the text, so a full disk must not fail the run.
+      // Artifact writes are best effort, but an existing branch's answer must never be replaced.
       return undefined;
+    } finally {
+      try { unlinkSync(temporary); } catch { /* No temporary file when creation failed. */ }
     }
   }
 
   releaseHeld(): void {
     if (!this.alive || !this.options.deliverGroup) return;
-    const groups = new Set(this.snapshot().map((child) => child.run.groupId).filter((id) => id !== undefined));
+    const groups = new Set(this.snapshot().filter((child) => !child.external).map((child) => child.run.groupId).filter((id) => id !== undefined));
     for (const id of groups) {
       const members = [...this.children.values()].filter((child) => child.record.run.groupId === id);
-      if (members.some((child) => active(child.record.run.state))) continue;
+      if (members.some((child) => this.occupied(child) || active(child.record.run.state))) continue;
       const held = members.filter((child) => child.record.run.state === "completed" && !child.record.run.delivered);
       if (!held.length) continue;
-      this.options.deliverGroup(members.map((child) => this.view(child)));
-      for (const child of held) { child.record.run.delivered = true; this.commit(child); }
+      const acquired: Child[] = [];
+      const release = () => { for (const child of acquired) { child.release?.(); child.release = undefined; } };
+      try {
+        for (const child of members) {
+          if (!child.release) { this.acquire(child); acquired.push(child); }
+        }
+      } catch {
+        // Another window may have acquired a member since the snapshot; leave the group undelivered.
+        release();
+        continue;
+      }
+      try {
+        this.options.deliverGroup(members.map((child) => this.view(child)));
+        for (const child of held) { child.record.run.delivered = true; this.commit(child); }
+      } finally { release(); }
     }
   }
 
@@ -561,6 +614,7 @@ export class Manager {
 
   async stop(id: string): Promise<ChildSnapshot> {
     const child = this.find(id);
+    this.acquire(child);
     child.stopRequested = true;
     child.record.questions = [];
     child.controller.abort();
@@ -568,9 +622,9 @@ export class Manager {
       try { await child.rpc.request({ type: "clear_queue" }, 1000); await child.rpc.request({ type: "abort" }, 2000); }
       catch { /* Termination below is also required when RPC is unresponsive. */ }
     }
-    await this.disconnect(child);
     this.finish(child, "cancelled", STOPPED);
     this.commit(child);
+    await this.disconnect(child);
     return this.view(child);
   }
 
@@ -592,6 +646,7 @@ export class Manager {
     this.alive = false;
     const children = [...this.children.values()];
     for (const child of children) {
+      if (!child.release) continue;
       child.controller.abort();
       child.record.questions = [];
       if (active(child.record.run.state)) {

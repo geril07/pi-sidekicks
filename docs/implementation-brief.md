@@ -1,7 +1,7 @@
 # V1 implementation brief
 
 Updated 2026-10-19. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local TypeScript checking, 110 scripted-provider/unit tests, and all four optional
+Local TypeScript checking, scripted-provider/unit tests, and all four optional
 terminal scenarios pass. The operator runs the extension from this checkout, but the
 real provider/MCP combination has no recorded smoke.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
@@ -18,7 +18,7 @@ observational runtime. Child-local question reservations only protect execution.
 
 | Entity | Identity and state |
 |---|---|
-| Child | Stable ID, agent definition body, name, model/thinking, cwd, session path, owner parent session; process is replaceable. |
+| Child | Stable ID, agent definition body, name, model/thinking, cwd, session path and checkpoint leaf, owner parent session; process is replaceable and its writer lock identifies the owning runtime. |
 | Assignment/run | Separate ID; `starting` → `running` ↔ `waiting` → `completed`, `failed`, `cancelled`, or `interrupted`. |
 | Question | Separate ID tied to its originating run; pending until answered, withdrawn, or cancelled. One blocking barrier per run; multiple nonblocking questions per conversation. |
 
@@ -97,6 +97,33 @@ skipping is used. The manager ignores `agent_end`; settlement still requires
 `agent_settled`. The limit is not a memory budget: strings, parsed objects, and
 transient copies consume additional memory. Larger records remain transport faults.
 
+### Branch checkpoints and multiple windows
+
+The parent registry stores `sessionLeafId` (`null` before the first child checkpoint).
+The child appends small `sidekicks:checkpoint` custom entries before an assistant
+message starts, after a completed turn, and at final settlement. These boundaries
+exclude unresolved tool batches and do not enter model context. On reopening, the
+internal `/sidekicks-restore` command navigates to the saved marker without a model
+call or summary, then appends an acknowledgement carrying the request ID. Pi reports
+slash commands as handled even if their handler throws, so the parent requires that
+acknowledgement before submitting work. The null checkpoint means the child's origin.
+No bulk session rewrite or new storage service is used. Registry snapshots without
+`sessionLeafId` are not restored; old data is left untouched, without migration.
+
+A second process opening the same parent ID displays another writer's children as
+external, with saved status rather than `interrupted` or live elapsed time. It cannot
+send, answer, stop, redeliver held results, or persist changes for them. A live or
+unverified writer lock blocks mutations; acquisition is atomic and precedes task
+files, checkpoint restoration, and state writes. Foreign children do not consume this
+runtime's assignment slots. Releasing the owner permits an explicit follow-up from
+the second window's saved checkpoint; there is no automatic takeover or live status
+synchronization. Different parent IDs (including clone/fork) do not adopt the registry.
+
+Task/result numbers are selected under the writer lock above existing artifact
+numbers across all branches. Files are published using a same-directory hard link
+from a complete temporary file, which cannot replace an existing path. Artifact
+writes remain best effort. A rejected follow-up leaves the preceding run intact.
+
 ### Settlement and delivery
 
 Classify only at `agent_settled`, never from prompt acceptance, `agent_end`, or exit:
@@ -144,9 +171,11 @@ tool replay log. No transcript-receipt reconciliation is implemented in v1.
 
 On shutdown/reload/new/resume/fork, invalidate the owning runtime before aborting
 dialogs, closing navigation, stopping child groups, and releasing writer locks.
-Tree navigation also replaces the manager without copying old state into the new
-branch. Returning to the owning session restores detached records; unresolved runs
-become interrupted. Another parent session cannot adopt them.
+Actual tree navigation also replaces the manager without copying old state into the
+new branch; cancelled/no-op navigation does not. Only owned children are stopped or
+persisted. Returning restores the selected child checkpoints; unresolved runs without
+another writer become interrupted and stale questions are cancelled. Foreign writers
+remain untouched. Another parent session ID cannot adopt them.
 
 Stop clears child queues, requests abort, then ends stdin and uses bounded SIGTERM /
 SIGKILL process-group cleanup. Keep transcripts. A crash-stale lock is replaced
@@ -289,6 +318,11 @@ Verified locally without a billable model or external MCP call:
 - Actual parent extension launch → question → answer → automatic result, with no
   status-polling tool calls; effective extension-provided model/thinking verified.
 - Same-process continuation and reopening the same saved Pi conversation.
+- Real-Pi A/B/C child branching, preserved original artifacts, restoration of an
+  in-flight snapshot without dangling tool calls, waiting/no-op tree behavior,
+  same-window clone/fork cleanup, independent CLI fork, two parent processes on
+  one file, denied foreign operations without state/task writes, explicit takeover
+  after release, and suppressed foreign held-batch delivery.
 - `send.model` cross-provider recovery after a synthetic quota failure through real
   Pi, saved selection after reload/reopen, retained context and recorded changes;
   invalid overrides submit no prompt, partial RPC failures roll back, running/waiting

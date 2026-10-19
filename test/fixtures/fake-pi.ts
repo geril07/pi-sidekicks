@@ -71,6 +71,14 @@ input.on("line", (line) => {
     case "clear_queue": response({ steering: [], followUp: [] }); break;
     case "abort": isStreaming = false; emit({ type: "agent_settled", aborted: true }); response(); break;
     case "prompt": {
+      if (command.message.startsWith("/sidekicks-restore ")) {
+        if (mode === "bad-restore") { response({ disposition: "handled" }); break; }
+        const { requestId } = JSON.parse(command.message.slice("/sidekicks-restore ".length));
+        emit({ type: "entry_appended", entry: { type: "custom", id: `checkpoint-${command.id}`,
+          customType: "sidekicks:checkpoint", data: { requestId } } });
+        response({ disposition: "handled" });
+        break;
+      }
       prompts++;
       isStreaming = true;
       if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, model, thinkingLevel, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);

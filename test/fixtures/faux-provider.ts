@@ -13,6 +13,9 @@ export default function fixture(pi: ExtensionAPI): void {
   const next = scenario === "model-switch" ? fauxProvider({ provider: "sidekicks-next", models: [{ id: "alternate", reasoning: true }], tokensPerSecond: 0 }) : undefined;
   if (next) pi.registerProvider(next.provider);
   pi.registerCommand("qa-reload", { description: "Test-only reload", handler: async (_args, ctx) => { await ctx.reload(); } });
+  pi.registerCommand("qa-tree", { description: "Test-only tree navigation", handler: async (args, ctx) => {
+    await ctx.navigateTree(args.trim() === "current" ? ctx.sessionManager.getLeafId()! : args.trim(), { summarize: false });
+  } });
   let unsubscribe: (() => void) | undefined;
   pi.on("session_start", (_event, ctx) => {
     if (ctx.mode !== "tui") return;
@@ -47,7 +50,7 @@ export default function fixture(pi: ExtensionAPI): void {
     description: "Test-only side effect",
     async execute(_id, _args, signal) {
       log({ effect: true });
-      if (scenario === "nonblocking" && process.env.SIDEKICKS_TEST_GATE) {
+      if (["nonblocking", "lifecycle"].includes(scenario) && process.env.SIDEKICKS_TEST_GATE) {
         while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10, undefined, { signal });
       }
       return { content: [{ type: "text", text: "effect" }], details: undefined };
@@ -74,11 +77,18 @@ export default function fixture(pi: ExtensionAPI): void {
   const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
     log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent", cwd: process.cwd(),
       lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
-      transcript: ["nonblocking", "model-switch"].includes(scenario) ? JSON.stringify(context.messages) : undefined });
-    if (scenario === "model-switch") {
+      transcript: ["nonblocking", "model-switch", "lifecycle"].includes(scenario) ? JSON.stringify(context.messages) : undefined });
+    if (scenario === "model-switch" || scenario === "lifecycle") {
       const textOf = (message: TranscriptContext["messages"][number]) => typeof message.content === "string" ? message.content : message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
       if (process.env.PI_SIDEKICKS_CHILD) {
         const lastUser = context.messages.filter((message) => message.role === "user").at(-1);
+        if (scenario === "lifecycle" && lastUser && textOf(lastUser).includes("INFLIGHT_TEST")) {
+          return fauxAssistantMessage(fauxToolCall("effect", {}), { stopReason: "toolUse" });
+        }
+        if (scenario === "lifecycle" && lastUser && textOf(lastUser).includes("WAIT_TEST")) {
+          return fauxAssistantMessage(fauxToolCall("ask_parent", { question: "Waiting for a lifecycle answer?" }), { stopReason: "toolUse" });
+        }
+        if (scenario === "lifecycle") return fauxAssistantMessage(`Answer: ${lastUser ? textOf(lastUser) : "empty"}`);
         return lastUser && textOf(lastUser).includes("FAIL_QUOTA")
           ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "Synthetic quota exhausted" })
           : fauxAssistantMessage("Saved work: CODEWORD. Continued with the prior conversation.");
@@ -129,6 +139,6 @@ export default function fixture(pi: ExtensionAPI): void {
     }
     return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
   };
-  faux.setResponses(Array.from({ length: scenario === "model-switch" ? 60 : 12 }, () => script));
+  faux.setResponses(Array.from({ length: ["model-switch", "lifecycle"].includes(scenario) ? 60 : 12 }, () => script));
   next?.setResponses(Array.from({ length: 12 }, () => script));
 }
