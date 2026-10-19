@@ -349,6 +349,144 @@ test("locks from another boot ignore reused live PIDs; same-boot locks fail clos
   assert.equal((await h.manager.send(child.id, "After reboot")).run.state, "running");
 });
 
+for (const scenario of ["switch-complete", "switch-failure"]) {
+  test(`send changes a settled child's model/thinking and retains its identity: ${scenario}`, async (t) => {
+    const h = await harness(scenario);
+    t.after(() => h.manager.shutdown());
+    const first = await h.launch();
+    await h.waitFor(() => h.deliveries.length === 1);
+    const next = await h.manager.send(first.name, "Continue", undefined, "local/next:low");
+    await h.waitFor(() => h.deliveries.length === 2);
+    assert.equal(next.id, first.id);
+    assert.equal(next.name, first.name);
+    assert.equal(next.agent, first.agent);
+    assert.equal(next.sessionPath, first.sessionPath);
+    assert.notEqual(next.run.id, first.run.id);
+    assert.equal(next.run.number, 2);
+    assert.equal(next.model, "local/next");
+    assert.equal(next.thinking, "low");
+    await h.manager.send(first.id, "Keep the selection");
+    await h.waitFor(() => h.deliveries.length === 3);
+    await h.manager.stop(first.id);
+    await h.manager.send(first.id, "Reopen with the saved selection");
+    await h.waitFor(() => h.deliveries.length === 4);
+    const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(prompts.map((p) => [p.model.id, p.thinkingLevel]), [["scripted", "off"], ["next", "low"], ["next", "low"], ["next", "low"]]);
+    assert.equal(h.records.get(first.id)!.model, "local/next");
+  });
+}
+
+test("model-only send retains thinking, rejects unsupported levels without a run, and accepts an explicit supported level", async (t) => {
+  const h = await harness("switch-complete");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.manager.send(child.id, "Set low", undefined, "local/scripted:low");
+  await h.waitFor(() => h.deliveries.length === 2);
+  const next = await h.manager.send(child.id, "Keep low", undefined, "local/next");
+  await h.waitFor(() => h.deliveries.length === 3);
+  assert.equal(next.thinking, "low");
+  for (const model of ["missing/model", "local/plain", "local/next:max", " "]) {
+    await assert.rejects(h.manager.send(child.id, "Must not be submitted", undefined, model), /exactly one|unsupported|blank/);
+    const current = h.manager.snapshot()[0];
+    assert.equal(current.model, "local/next");
+    assert.equal(current.thinking, "low");
+    assert.equal(current.run.id, next.run.id);
+  }
+  assert.equal(h.deliveries.length, 3);
+  const plain = await h.manager.send(child.id, "Use plain", undefined, "local/plain:off");
+  assert.equal(plain.model, "local/plain");
+  assert.equal(plain.thinking, "off");
+  await h.waitFor(() => h.deliveries.length === 4);
+  const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(prompts.length, 4);
+  assert(!prompts.some((p) => p.message.includes("Must not be submitted")));
+});
+
+for (const scenario of ["switch-partial", "switch-clamp", "switch-rollback"]) {
+test(`a configuration failure restores the prior selection or disconnects without submitting a prompt: ${scenario}`, async (t) => {
+  const h = await harness(scenario);
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await assert.rejects(h.manager.send(child.id, "Must not be submitted", undefined, "local/next:low"), /Scripted thinking failure|did not retain/);
+  const current = h.manager.snapshot()[0];
+  assert.equal(current.run.id, child.run.id);
+  assert.equal(current.model, "local/scripted");
+  assert.equal(current.thinking, "off");
+  assert.equal(current.connected, scenario !== "switch-rollback");
+  await h.manager.send(child.id, "Continue unchanged");
+  await h.waitFor(() => h.deliveries.length === 2);
+  const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(prompts.length, 2);
+  assert(prompts.every((p) => p.model.id === "scripted" && p.thinkingLevel === "off"));
+});
+}
+
+test("a restored child can switch even when its old model is no longer available", async (t) => {
+  const h = await harness("switch-complete");
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.manager.shutdown();
+  const manager = new Manager({ ...h.options, restored: [...h.records.values()], env: { ...h.options.env,
+    SIDEKICKS_FAKE_MODELS: JSON.stringify([{ provider: "local", id: "next" }]) } });
+  t.after(() => manager.shutdown());
+  const next = await manager.send(child.id, "Continue restored work", undefined, "local/next:low");
+  assert.equal(next.id, child.id);
+  assert.equal(next.sessionPath, child.sessionPath);
+  assert.equal(next.model, "local/next");
+  assert.equal(next.thinking, "low");
+});
+
+test("model overrides are rejected for running and waiting children without cancelling questions", async (t) => {
+  const running = await harness();
+  const waiting = await harness("question");
+  t.after(() => Promise.all([running.manager.shutdown(), waiting.manager.shutdown()]));
+  const active = await running.launch();
+  const paused = await waiting.launch();
+  await waiting.waitFor(() => waiting.manager.snapshot()[0].run.state === "waiting");
+  await assert.rejects(running.manager.send(active.id, "Change", undefined, "local/scripted:low"), /finished child/);
+  await assert.rejects(waiting.manager.send(paused.id, "Change", undefined, "local/scripted:low"), /finished child/);
+  assert.equal(waiting.manager.snapshot()[0].run.question?.id, "question-1");
+  await waiting.manager.answer(paused.id, "question-1", "Choose A");
+  await waiting.waitFor(() => waiting.manager.snapshot()[0].run.state === "completed");
+});
+
+for (const cancel of ["stop", "abort", "shutdown"]) {
+  test(`${cancel} during model configuration cannot submit the continuation`, async (t) => {
+    const h = await harness("switch-slow");
+    t.after(() => h.manager.shutdown());
+    const child = await h.launch();
+    await h.waitFor(() => h.deliveries.length === 1);
+    const controller = new AbortController();
+    const changing = h.manager.send(child.id, "Must not be submitted", controller.signal, "local/next:low");
+    const rejected = assert.rejects(changing, /closed|cancelled|active|abort/i);
+    await assert.rejects(h.manager.send(child.id, "Concurrent send"), /changing state/);
+    if (cancel === "stop") await h.manager.stop(child.id);
+    else if (cancel === "abort") controller.abort();
+    else await h.manager.shutdown();
+    await rejected;
+    assert.equal(h.manager.snapshot()[0].model, "local/scripted");
+    assert.equal((await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").length, 1);
+  });
+}
+
+test("changing a held batch member preserves the old result's model attribution", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await h.manager.launchBatch([
+    { agent: "worker", instructions: "", name: "done", task: "outcome=complete", model: "local/scripted", thinking: "off" },
+    { agent: "worker", instructions: "", name: "working", task: "Hold", model: "local/scripted", thinking: "off" },
+  ]);
+  await h.waitFor(() => h.manager.snapshot().find((child) => child.name === "done")!.run.state === "completed");
+  await assert.rejects(h.manager.send("done", "Invalid", undefined, "missing/model"), /exactly one/);
+  assert.equal(h.deliveries.length, 0);
+  const next = await h.manager.send("done", "Next assignment", undefined, "local/scripted:low");
+  assert.equal(next.thinking, "low");
+  assert.equal(h.deliveries[0].child.thinking, "off");
+  assert.equal(h.deliveries[0].child.run.number, 1);
+});
+
 test("invalid model/thinking and malformed RPC fail startup without keeping a live child", async (t) => {
   const h = await harness();
   const invalid = await harness("invalid");

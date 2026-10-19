@@ -9,6 +9,14 @@ export interface Agent { name: string; description: string; instructions: string
 export interface AgentProblem { path: string; reason: string }
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
+export function parseModel(value: string): { model: string; thinking?: Thinking } {
+  const suffix = value.lastIndexOf(":");
+  const thinking = suffix > 0 && thinkingLevels.includes(value.slice(suffix + 1) as Thinking) ? value.slice(suffix + 1) as Thinking : undefined;
+  const model = thinking ? value.slice(0, suffix) : value;
+  if (!model.trim()) throw new Error("model must not be blank");
+  return { model, thinking };
+}
+
 function readAgent(path: string): Agent {
   const { frontmatter: data, body } = parseFrontmatter<Record<string, unknown>>(readFileSync(path, "utf8"));
   if (typeof data.name !== "string" || !data.name.trim() || typeof data.description !== "string" || !data.description.trim()) {

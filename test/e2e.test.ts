@@ -159,6 +159,87 @@ async function isolated(scenario: string) {
     SIDEKICKS_TEST_LOG: log, SIDEKICKS_TEST_SCENARIO: scenario } };
 }
 
+test("real send tool switches provider/model/thinking after quota failure and retains the conversation across reload", { timeout: 60_000 }, async (t) => {
+  const h = await isolated("model-switch");
+  const parentSession = join(h.dir, "parent.jsonl");
+  const rpc = new RpcConnection({ command: process.execPath, args: [cli, "--mode", "rpc", "--no-approve",
+    "--session", parentSession, "-e", resolve("src/index.ts"), "--model", "sidekicks-test/scripted"] }, { cwd: h.dir, env: h.env });
+  t.after(() => rpc.stop());
+  await rpc.request({ type: "set_auto_retry", enabled: false });
+  const entries = async () => (await rpc.request({ type: "get_entries" })).entries;
+  const toolResults = (all: Awaited<ReturnType<typeof entries>>) => all.filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "subagent");
+  const waitFor = async <T,>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> => {
+    const deadline = performance.now() + 15_000;
+    while (true) {
+      const value = await read();
+      if (ready(value)) return value;
+      assert(performance.now() < deadline, "Model continuation timed out");
+      await delay(10);
+    }
+  };
+  const idle = () => waitFor(() => rpc.request({ type: "get_state" }), (state) => !state.isStreaming && !state.pendingMessageCount);
+  const invoke = async (args: object) => {
+    await idle();
+    const before = toolResults(await entries()).length;
+    await rpc.request({ type: "prompt", message: `MODEL_CALL ${JSON.stringify(args)}` });
+    const all = await waitFor(entries, (all) => toolResults(all).length > before);
+    const result = toolResults(all).at(-1)!;
+    assert(result.type === "message" && result.message.role === "toolResult");
+    return result.message;
+  };
+  const lastChild = async () => {
+    const entry = (await entries()).filter((entry) => entry.type === "custom" && entry.customType === "sidekicks:state").at(-1);
+    assert(entry?.type === "custom");
+    return entry.data as ChildRecord;
+  };
+  const settled = (state: string) => waitFor(lastChild, (child) => child.run.state === state);
+  const launch = await invoke({ action: "launch", agent: "worker", name: "target", task: "Remember CODEWORD", model: "sidekicks-test/scripted:low" });
+  assert.equal(launch.isError, false);
+  const first = await settled("completed");
+  const header = (await readFile(first.sessionPath, "utf8")).split("\n")[0];
+  for (const args of [
+    { action: "send", child: "target", message: "Invalid model", model: "missing/model" },
+    { action: "send", child: "target", message: "No separate thinking", thinking: "high" },
+    { action: "answer", child: "target", questionId: "stale", answer: "A", model: "sidekicks-next/alternate" },
+  ]) {
+    assert.equal((await invoke(args)).isError, true);
+    assert.equal((await lastChild()).run.id, first.run.id);
+    assert.equal((await lastChild()).model, first.model);
+  }
+  assert.equal((await invoke({ action: "send", child: "target", message: "FAIL_QUOTA" })).isError, false);
+  const failed = await settled("failed");
+  assert.match(failed.run.result!, /Synthetic quota exhausted/);
+  const changed = await invoke({ action: "send", child: "target", message: "Continue the saved work", model: "sidekicks-next/alternate:high" });
+  assert.equal(changed.isError, false);
+  assert.match(JSON.stringify(changed.content), /Model: sidekicks-next\/alternate:high/);
+  const next = await settled("completed");
+  assert.equal(next.id, first.id);
+  assert.equal(next.name, first.name);
+  assert.equal(next.agent, first.agent);
+  assert.equal(next.instructions, first.instructions);
+  assert.equal(next.cwd, first.cwd);
+  assert.equal(next.sessionPath, first.sessionPath);
+  assert.equal(next.model, "sidekicks-next/alternate");
+  assert.equal(next.thinking, "high");
+  assert.equal(next.run.number, 3);
+  const transcript = (await readFile(first.sessionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert(transcript.some((entry) => entry.type === "model_change" && entry.provider === "sidekicks-next" && entry.modelId === "alternate"));
+  assert(transcript.some((entry) => entry.type === "thinking_level_change" && entry.thinkingLevel === "high"));
+  assert(transcript.some((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.provider === "sidekicks-next"));
+  const calls = (await readFile(h.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const continued = calls.filter((call) => call.child === first.id).at(-1);
+  assert.match(continued.transcript, /Remember CODEWORD/);
+  assert.equal(calls.filter((call) => call.child === first.id).length, 3, "invalid overrides never call a child provider");
+  await idle();
+  await rpc.request({ type: "prompt", message: "/qa-reload" });
+  assert.equal((await invoke({ action: "send", child: "target", message: "Continue after reload" })).isError, false);
+  const reopened = await settled("completed");
+  assert.equal(reopened.model, "sidekicks-next/alternate");
+  assert.equal(reopened.thinking, "high");
+  assert.equal(reopened.run.number, 4);
+  assert.equal((await readFile(first.sessionPath, "utf8")).split("\n")[0], header);
+});
+
 for (const stopEarly of [false, true]) {
 test(`nonblocking questions notify during work, accept correlated active/idle replies, and cancel on stop (early: ${stopEarly})`, { timeout: 30_000 }, async (t) => {
   const h = await isolated("nonblocking");

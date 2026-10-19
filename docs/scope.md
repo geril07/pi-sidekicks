@@ -20,7 +20,9 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
 
 - Asynchronous delegation: launching a child releases the parent to do other work.
 - Markdown-defined roles with reusable instructions.
-- Per-launch model and thinking overrides, not only fixed role defaults.
+- Per-launch model and thinking overrides, not only fixed role defaults. `send` also
+  accepts optional `model` with a `:thinking` suffix for a finished child's next run;
+  no separate `thinking` on send, and no model override on answer.
 - Parent-to-child guidance and child-to-parent questions with an answer path.
 - Questions can ask-and-continue or ask-and-wait. A typical child count must not
   become a low concurrency limit; the user suggested a ceiling around 64.
@@ -96,10 +98,12 @@ Precedence is per-launch override > role default > current parent default.
 Model selection must use Pi's actual available
 catalog and disclose the effective model/thinking rather than silently substitute.
 
-Initial implementation choices: append role instructions to the normal Pi prompt,
-ignore legacy tool/skill restrictions, and keep model/thinking fixed for a child's
-conversation. No mutable-defaults interface is added. These defaults can be adjusted
-after the first implementation; see the implementation brief.
+Initial implementation choices: append role instructions to the normal Pi prompt
+and ignore legacy tool/skill restrictions. The later user-requested `send.model`
+override changes a finished child's saved selection, not its identity or instructions.
+Omitted thinking retains the current level; unsupported levels fail rather than
+silently downgrade. Running/waiting model changes are rejected. No mutable-defaults
+interface is added; see the implementation brief.
 
 ## Constraints audit
 
@@ -113,7 +117,7 @@ those records. Existing source is evidence of implementation, not user approval.
 | Three active assignments | Assistant-inferred from typical usage, not a requirement. Replaced with a fixed ceiling of 64 active assignments, including startup and blocking waits; no queue/configuration added. 64 is a chosen ceiling following the user's suggestion, not a tested operating scale. |
 | Always-blocking questions, one pending question, no ordinary guidance while pending | Assistant choices, superseded by the correction. `ask_parent.wait` is optional and defaults to `true` to preserve existing calls. `false` permits multiple outstanding questions and normal guidance; blocking pauses still reserve one safe barrier. |
 | Nonblocking late-answer policy | New implementation decision: retain replies in the same conversation without a model turn or reopening the completed assignment. Explicit `send` starts further work. Unanswered nonblocking questions survive normal follow-ups but are cancelled on stop, failure, process loss, or parent detach. |
-| Model/thinking frozen for the conversation | Assistant choice. Original scope required launch overrides and left changes on later runs undecided. Retained for this change, not a permanent ban. |
+| Model/thinking frozen for the conversation | Assistant choice, superseded by the user's later request: optional `send.model` (including a `:thinking` suffix) changes a finished child's next run and saved selection. `answer` and running steering remain content-only; no new action or role switching. |
 | Mandatory predefined role; shared parent cwd | Assistant interface simplifications. Roles were required, but mandatory role selection and shared cwd were not. Role selection is retained. Per-launch `cwd` was added 2026-10-18 at the operator's request, after a session audit found about 12% of nicobailon dispatches targeted a directory other than the session's (mostly sibling worktrees). OpenCode v2 does not offer it: its child sessions must inherit the parent's location. Children also get `PI_SUBAGENT_CHILD=1` and `PI_SUBAGENT_CHILD_AGENT` because the operator's pi-notifier recognises children by them. |
 | Append-only role prompts; ignored legacy settings model pins | Assistant prompt/migration choices. Append versus replace was originally open; legacy compatibility was not required. Retained and disclosed in README. |
 | Children told not to delegate; this package's parent tools suppressed in children | Assistant recursion/scope policy. Nested delegation was only a proposed exclusion. Retained for v1, not a user ban on all delegation tools. |

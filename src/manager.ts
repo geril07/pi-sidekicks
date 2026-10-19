@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ContextUsage, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
+import { parseModel } from "./agents.ts";
 
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -171,8 +172,9 @@ export class Manager {
     return this.view(child);
   }
 
-  async send(id: string, message: string, signal?: AbortSignal): Promise<ChildSnapshot> {
+  async send(id: string, message: string, signal?: AbortSignal, model?: string): Promise<ChildSnapshot> {
     const child = this.find(id);
+    if (model !== undefined && active(child.record.run.state)) throw new Error("Model changes require a finished child. Stop it or wait for completion first.");
     if (child.record.run.state === "waiting" || child.record.run.question) throw new Error("Answer the pending question by questionId, or stop the child.");
     if (child.operation || child.settling || child.closing) throw new Error("Child is changing state; retry after it settles.");
     if (child.record.run.state === "running" && child.rpc) {
@@ -185,9 +187,43 @@ export class Manager {
     } else {
       this.capacity();
       const previous = child.record.run;
+      const previousView = this.view(child);
+      if (model !== undefined) {
+        const selected = parseModel(model);
+        const saved = { model: child.record.model, thinking: child.record.thinking, contextUsage: child.record.contextUsage };
+        const connected = !!child.rpc;
+        child.operation = true;
+        child.stopRequested = false;
+        const abort = () => { void this.stop(child.record.id).catch(() => {}); };
+        signal?.addEventListener("abort", abort, { once: true });
+        try {
+          signal?.throwIfAborted();
+          const selection = { model: selected.model, thinking: selected.thinking ?? saved.thinking };
+          if (!child.rpc) await this.open(child, selection);
+          else await this.configure(child, selection);
+          this.assertAlive();
+          signal?.throwIfAborted();
+          if (child.stopRequested) throw new Error("Model change cancelled");
+          this.capacity();
+          this.commit(child);
+        } catch (error) {
+          // A failed second RPC mutation must not leave a live process on a different selection.
+          if (connected && child.rpc && this.alive && !child.stopRequested && !signal?.aborted) {
+            try { await this.configure(child, saved); }
+            catch { await this.disconnect(child); }
+          } else await this.disconnect(child);
+          Object.assign(child.record, saved);
+          this.commit(child);
+          throw error;
+        } finally {
+          signal?.removeEventListener("abort", abort);
+          child.operation = false;
+        }
+      }
       if (previous.groupId && previous.state === "completed" && !previous.delivered) {
         previous.delivered = true;
-        this.options.deliver(this.view(child), "result");
+        previousView.run.delivered = true;
+        this.options.deliver(previousView, "result");
         this.commit(child);
       }
       if (previous.state === "interrupted" || previous.state === "cancelled") {
@@ -260,7 +296,7 @@ export class Manager {
     }
   }
 
-  private async open(child: Child): Promise<void> {
+  private async open(child: Child, selection = { model: child.record.model, thinking: child.record.thinking }): Promise<void> {
     const record = child.record;
     if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
     if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}`);
@@ -311,26 +347,38 @@ export class Manager {
       }
       void this.disconnect(child).catch(() => {});
     });
+    await this.configure(child, selection);
+  }
+
+  private async configure(child: Child, selection: { model: string; thinking: Thinking }): Promise<void> {
+    const rpc = child.rpc!;
+    const ready = await rpc.request({ type: "get_state" });
+    if (ready.isStreaming || ready.isCompacting || ready.pendingMessageCount) throw new Error("Child is not idle; refusing to change its model or queue an assignment behind it.");
+    if (ready.sessionFile !== child.record.sessionPath) throw new Error("Child opened a different session file");
     const catalog = await rpc.request({ type: "get_available_models" });
     // A full provider/id wins over bare ids: gateway catalogs have ids such as openrouter's `openai/gpt-6-luna`.
-    const named = catalog.models.filter((model) => `${model.provider}/${model.id}` === record.model);
-    const matches = named.length ? named : catalog.models.filter((model) => model.id === record.model);
+    const named = catalog.models.filter((model) => `${model.provider}/${model.id}` === selection.model);
+    const matches = named.length ? named : catalog.models.filter((model) => model.id === selection.model);
     if (matches.length !== 1) {
-      throw new Error(`Model must match exactly one available child model: ${record.model}${matches.length ? `. Matches: ${matches.map((model) => `${model.provider}/${model.id}`).join(", ")}` : ""}`);
+      throw new Error(`Model must match exactly one available child model: ${selection.model}${matches.length ? `. Matches: ${matches.map((model) => `${model.provider}/${model.id}`).join(", ")}` : ""}`);
     }
     const model = matches[0];
     await rpc.request({ type: "set_model", provider: model.provider, modelId: model.id });
     const { levels } = await rpc.request({ type: "get_available_thinking_levels" });
-    if (!levels.includes(record.thinking)) throw new Error(`Thinking ${record.thinking} is unsupported by ${record.model}; supported: ${levels.join(", ")}`);
-    await rpc.request({ type: "set_thinking_level", level: record.thinking });
+    if (!levels.includes(selection.thinking)) throw new Error(`Thinking ${selection.thinking} is unsupported by ${selection.model}; supported: ${levels.join(", ")}. Specify model:thinking with a supported level.`);
+    await rpc.request({ type: "set_thinking_level", level: selection.thinking });
     const state = await rpc.request({ type: "get_state" });
     if (state.isStreaming || state.isCompacting || state.pendingMessageCount) throw new Error("A child extension started work before readiness; refusing to queue the assignment behind it.");
-    if (`${state.model?.provider}/${state.model?.id}` !== `${model.provider}/${model.id}` || state.thinkingLevel !== record.thinking) {
+    if (`${state.model?.provider}/${state.model?.id}` !== `${model.provider}/${model.id}` || state.thinkingLevel !== selection.thinking) {
       throw new Error("Child did not retain the requested model/thinking");
     }
-    if (state.sessionFile !== record.sessionPath) throw new Error("Child opened a different session file");
-    record.model = `${model.provider}/${model.id}`;
-    if (model.contextWindow > 0) record.contextUsage = { tokens: null, percent: null, contextWindow: model.contextWindow };
+    if (state.sessionFile !== child.record.sessionPath) throw new Error("Child opened a different session file");
+    this.assertAlive();
+    if (child.rpc !== rpc || child.stopRequested) throw new Error("Model change cancelled");
+    child.record.model = `${model.provider}/${model.id}`;
+    child.record.thinking = selection.thinking;
+    child.contextRequest++;
+    child.record.contextUsage = model.contextWindow > 0 ? { tokens: null, percent: null, contextWindow: model.contextWindow } : undefined;
     void this.refreshContext(child);
   }
 

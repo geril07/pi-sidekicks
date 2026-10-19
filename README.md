@@ -29,7 +29,7 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 | Action | Required fields | Behavior |
 |---|---|---|
 | `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. Batch: tasks take the same optional fields; optional `results`, `shared`. |
-| `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. |
+| `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. Optional `model` (with `:thinking`) changes a finished child's saved selection before continuing. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. The tool result is the outcome; no separate message follows. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
@@ -39,8 +39,24 @@ Tool results and delivered messages are short plain text, not JSON.
 
 Questions and final results arrive automatically. Progress updates do not wake the
 parent model. Up to 64 assignments can be active, including startup and blocking questions;
-completed children can remain idle for follow-up. Model/thinking stay fixed after
-launch, and unavailable selections fail rather than silently fall back.
+completed children can remain idle for follow-up. Unavailable selections fail rather
+than silently fall back.
+
+To continue a completed, failed, stopped, or interrupted child on another model:
+
+```json
+{"action":"send","child":"worker","model":"openai-codex/gpt-6.1-sol:low","message":"Continue the saved work."}
+```
+
+The name, instructions, cwd, and conversation stay unchanged. The confirmed selection
+is returned and saved for later sends and session reopening. Without `model`, keep
+that selection. Without a `:thinking` suffix, keep the child's current thinking level;
+if the model does not support it, specify a supported suffix instead. There is no
+separate `thinking` field on `send`, and `answer` accepts no model override. Model
+changes while running or waiting on a blocking question are rejected; stop first or
+finish the current work. Configuration failures do not submit the message or create
+a new assignment; partial changes are rolled back, or the process is closed if it
+cannot be restored. Switching providers sends the retained context to the new provider.
 
 Children use `ask_parent({ question, wait })`. Omitted `wait` defaults to `true`
 (an implementation default, not a user requirement): the child pauses and the

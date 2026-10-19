@@ -2,8 +2,8 @@ import { existsSync, statSync } from "node:fs";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { Type } from "typebox";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
-import { Manager, type ChildRecord, type ChildSnapshot, type Thinking } from "./manager.ts";
-import { discoverAgents, thinkingLevels, type Agent, type AgentProblem } from "./agents.ts";
+import { Manager, type ChildRecord, type ChildSnapshot } from "./manager.ts";
+import { discoverAgents, parseModel, thinkingLevels, type Agent, type AgentProblem } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
 import { groupText, deliveryText, describeChild, elapsedOf, statusText } from "./present.ts";
 import { renderCall, renderDelivery, renderGroup, renderResult, type GroupDetails, type DeliveryDetails, type ToolDetails } from "./render.ts";
@@ -12,9 +12,9 @@ import type { Invocation } from "./rpc.ts";
 const STATE_ENTRY = "sidekicks:state";
 const DESCRIPTION = [
   "Delegate work to asynchronous child agents. Each child is a full Pi session with its own conversation; launch returns as soon as the child is running.",
-  "- launch: agent + task. Write the task so it stands alone (goal, relevant paths, constraints, what to return). Optional name (unique handle), model (a trailing :thinking is accepted), thinking, cwd (the child's working directory, absolute or relative to yours; default yours); these apply at launch only.",
+  "- launch: agent + task. Write the task so it stands alone (goal, relevant paths, constraints, what to return). Optional name (unique handle), model (a trailing :thinking is accepted), thinking, cwd (the child's working directory, absolute or relative to yours; default yours).",
   "- launch batch: tasks [{agent, task, name?, model?, thinking?, cwd?}] instead of top-level launch fields; optional shared text precedes each task with a blank line. Validates all members before starting; results defaults to together (hold completions for one batch message, failures/questions arrive immediately), or each (individual results).",
-  "- send: child + message. Steers a running child; starts a new run in a finished child's existing conversation.",
+  "- send: child + message. Steers a running child; starts a new run in a finished child's existing conversation. Optional model (with a :thinking suffix) changes the finished child's saved selection before continuing; omitted thinking keeps its current level. Model changes while running or waiting are rejected; stop first.",
   "- answer: child + questionId + answer. Replies to a question the child asked.",
   "- stop: child. Ends the work and keeps the conversation.",
   "- status: children and available agents.",
@@ -185,7 +185,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       agent: text("launch: agent definition to use, from the Agents list"),
       task: text("launch: the complete, self-contained assignment"),
       name: text("launch: unique handle for this child; defaults to the agent name", { maxLength: 100 }),
-      model: text("launch: provider/model id, optionally with a :thinking suffix (openai/gpt-6-luna:xhigh); defaults to the agent's model, then the parent's"),
+      model: text("launch/send: provider/model id, optionally with a :thinking suffix (openai/gpt-6-luna:xhigh). Launch defaults to agent then parent; send keeps the child's selection unless overridden and requires finished work"),
       thinking: Type.Optional(Type.Union(thinkingLevels.map((level) => Type.Literal(level)), { description: "launch: thinking level" })),
       cwd: text("launch: the child's working directory, absolute or relative to yours; defaults to yours"),
       tasks: Type.Optional(Type.Array(Type.Object({
@@ -212,7 +212,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       const runtime = current;
       if (!runtime || runtime.ctx.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new Error("Sidekicks session is not ready");
       const fields: Record<string, string[]> = { launch: ["agent", "task", "name", "model", "thinking", "cwd", "tasks", "results", "shared"],
-        send: ["child", "message"], answer: ["child", "questionId", "answer"], stop: ["child"], status: [] };
+        send: ["child", "message", "model"], answer: ["child", "questionId", "answer"], stop: ["child"], status: [] };
       const unexpected = Object.entries(args).filter(([key, value]) => key !== "action" && value !== undefined && !fields[args.action]?.includes(key));
       if (unexpected.length) throw new Error(`${args.action} does not take: ${unexpected.map(([key]) => key).join(", ")}. It takes: ${fields[args.action].join(", ") || "nothing"}.`);
       const requireText = (name: "agent" | "task" | "child" | "message" | "questionId" | "answer") => {
@@ -230,15 +230,14 @@ export default function sidekicks(pi: ExtensionAPI): void {
             const agent = agents.find((agent) => agent.name === input.agent);
             if (!agent) throw new Error(`Unknown agent. Available: ${agents.map((agent) => agent.name).join(", ") || "none"}`);
             // Agent listings show defaults as model:thinking, so models copy that form back here.
-            const suffix = input.model?.lastIndexOf(":") ?? -1;
-            const suffixed = suffix > 0 && thinkingLevels.includes(input.model!.slice(suffix + 1) as Thinking) ? input.model!.slice(suffix + 1) as Thinking : undefined;
-            if (suffixed && input.thinking && suffixed !== input.thinking) throw new Error(`model suffix :${suffixed} conflicts with thinking ${input.thinking}; give one`);
-            const model = (suffixed ? input.model!.slice(0, suffix) : input.model) ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+            const selected = input.model === undefined ? undefined : parseModel(input.model);
+            if (selected?.thinking && input.thinking && selected.thinking !== input.thinking) throw new Error(`model suffix :${selected.thinking} conflicts with thinking ${input.thinking}; give one`);
+            const model = selected?.model ?? agent.model ?? (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
             if (!model) throw new Error("No launch, agent, or parent model is available");
             const cwd = input.cwd === undefined ? undefined : resolvePath(ctx.cwd, input.cwd);
             if (cwd !== undefined && !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`cwd must be an existing directory: ${cwd}`);
             return { agent: agent.name, instructions: agent.instructions, name: input.name, task: input.task, cwd,
-              model, thinking: input.thinking ?? suffixed ?? agent.thinking ?? pi.getThinkingLevel() };
+              model, thinking: input.thinking ?? selected?.thinking ?? agent.thinking ?? pi.getThinkingLevel() };
           };
           if (args.tasks) {
             const conflicts = ["agent", "task", "name", "model", "thinking", "cwd"].filter((key) => args[key as keyof typeof args] !== undefined);
@@ -258,7 +257,10 @@ export default function sidekicks(pi: ExtensionAPI): void {
             model: args.model, thinking: args.thinking, cwd: args.cwd }), signal);
           return done("Launched. Its result or questions arrive as messages; do not poll.\n", child);
         }
-        case "send": return done("Sent.", await runtime.manager.send(requireText("child"), requireText("message"), signal));
+        case "send": {
+          const child = await runtime.manager.send(requireText("child"), requireText("message"), signal, args.model);
+          return done(args.model === undefined ? "Sent." : `Sent. Model: ${child.model}:${child.thinking}.`, child);
+        }
         case "answer": return done("Answered.", await runtime.manager.answer(requireText("child"), requireText("questionId"), requireText("answer"), signal));
         case "stop": return done("Stopped; conversation kept.", await runtime.manager.stop(requireText("child")));
         case "status": {

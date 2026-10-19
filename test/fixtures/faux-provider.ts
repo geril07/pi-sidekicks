@@ -10,6 +10,8 @@ export default function fixture(pi: ExtensionAPI): void {
   const faux = fauxProvider({ provider: "sidekicks-test", models: [{ id: "scripted", reasoning: true }], tokensPerSecond: 0 });
   pi.registerProvider(faux.provider);
   const scenario = process.env.SIDEKICKS_TEST_SCENARIO ?? "pause";
+  const next = scenario === "model-switch" ? fauxProvider({ provider: "sidekicks-next", models: [{ id: "alternate", reasoning: true }], tokensPerSecond: 0 }) : undefined;
+  if (next) pi.registerProvider(next.provider);
   pi.registerCommand("qa-reload", { description: "Test-only reload", handler: async (_args, ctx) => { await ctx.reload(); } });
   let unsubscribe: (() => void) | undefined;
   pi.on("session_start", (_event, ctx) => {
@@ -72,7 +74,21 @@ export default function fixture(pi: ExtensionAPI): void {
   const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
     log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent", cwd: process.cwd(),
       lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
-      transcript: scenario === "nonblocking" ? JSON.stringify(context.messages) : undefined });
+      transcript: ["nonblocking", "model-switch"].includes(scenario) ? JSON.stringify(context.messages) : undefined });
+    if (scenario === "model-switch") {
+      const textOf = (message: TranscriptContext["messages"][number]) => typeof message.content === "string" ? message.content : message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      if (process.env.PI_SIDEKICKS_CHILD) {
+        const lastUser = context.messages.filter((message) => message.role === "user").at(-1);
+        return lastUser && textOf(lastUser).includes("FAIL_QUOTA")
+          ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "Synthetic quota exhausted" })
+          : fauxAssistantMessage("Saved work: CODEWORD. Continued with the prior conversation.");
+      }
+      const request = context.messages.findLastIndex((message) => message.role === "user" && textOf(message).startsWith("MODEL_CALL "));
+      if (request >= 0 && !context.messages.slice(request + 1).some((message) => message.role === "assistant" && message.content.some((block) => block.type === "toolCall" && block.name === "subagent"))) {
+        return fauxAssistantMessage(fauxToolCall("subagent", JSON.parse(textOf(context.messages[request]).slice("MODEL_CALL ".length))), { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage("Parent received the tool response or child delivery.");
+    }
     if (scenario === "batch-parent") {
       if (process.env.PI_SIDEKICKS_CHILD && process.env.SIDEKICKS_TEST_GATE) {
         while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10);
@@ -113,5 +129,6 @@ export default function fixture(pi: ExtensionAPI): void {
     }
     return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
   };
-  faux.setResponses(Array.from({ length: 12 }, () => script));
+  faux.setResponses(Array.from({ length: scenario === "model-switch" ? 60 : 12 }, () => script));
+  next?.setResponses(Array.from({ length: 12 }, () => script));
 }

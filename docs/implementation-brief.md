@@ -66,7 +66,23 @@ answer continues the waiting run. Nonblocking answers use the child-only interna
 and `deliverAs: "steer"`: append at a safe boundary while running, or immediately
 while idle, without a new model turn. Framed answer text is message content, not
 an executable command. A stopped/detached child reopens its saved session and
-reapplies its saved agent/model configuration. Model changes require a new child.
+reapplies its saved agent/model configuration.
+
+`send.model` optionally selects a new model for a finished child's next run, using
+launch's `model:thinking` parsing. Without a suffix, retain the child's thinking;
+unsupported levels fail. There is no separate thinking argument on send, no model
+override on answer, and no role change. Reject overrides during active work or a
+blocking question. While configuring, hold the child operation guard and handle
+abort/stop/detach. Check idle state, exact child catalog, thinking support, session
+path, and effective selection before creating the next run or submitting its prompt.
+Live processes change through public `set_model`/`set_thinking_level`; detached ones
+open directly with the new selection, even if the old model is unavailable.
+Save the verified selection in child metadata; Pi records changes in its transcript.
+A configuration error leaves the prior run intact and submits no prompt. Restore
+the prior live selection, or disconnect if rollback fails; retain the prior saved
+selection so a later explicit send can reopen it. Held batch results retain their
+old selection snapshot and are released only after configuration succeeds. The
+send result confirms the effective full provider/model and thinking.
 Labels (`Task:`, `Guidance:`, `Follow-up:`, `Answer to <id>:`) ensure parent text cannot become a leading slash command; Pi runs such a prompt as an extension command, skill, or template.
 A new run after interruption or cancellation gets a leading partial-change warning;
 completed/failed follow-ups and running guidance are unchanged.
@@ -267,6 +283,10 @@ Verified locally without a billable model or external MCP call:
 - Actual parent extension launch → question → answer → automatic result, with no
   status-polling tool calls; effective extension-provided model/thinking verified.
 - Same-process continuation and reopening the same saved Pi conversation.
+- `send.model` cross-provider recovery after a synthetic quota failure through real
+  Pi, saved selection after reload/reopen, retained context and recorded changes;
+  invalid overrides submit no prompt, partial RPC failures roll back, running/waiting
+  overrides reject, and stop/abort/detach during configuration cannot submit work.
 - Question first/middle/last, multiple questions, sequential/parallel siblings,
   queued guidance/follow-up, malformed/nested calls, unknown tools, continuation hooks.
 - More than three live fake-RPC assignments; the 64-slot reservation boundary,

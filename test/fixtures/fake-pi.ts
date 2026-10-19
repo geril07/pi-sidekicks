@@ -7,10 +7,12 @@ const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];
 let model = { provider: "local", id: "scripted" };
 let thinkingLevel = "off";
 let prompts = 0;
+let isStreaming = false;
+let switched = false;
 let contextTokens: number | null = 0;
 let statsRequests = 0;
 const emit = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const settled = () => emit({ type: "agent_settled", aborted: false });
+const settled = () => { isStreaming = false; emit({ type: "agent_settled", aborted: false }); };
 const complete = () => {
   emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } });
   settled();
@@ -24,16 +26,28 @@ input.on("line", (line) => {
   switch (command.type) {
     case "get_available_models": {
       if (mode === "invalid") { process.stdout.write("not JSON\n"); return; }
-      const respond = () => response({ models: mode === "catalog" ? [{ provider: "openai", id: "luna" }, { provider: "codex", id: "luna" }, { provider: "gateway", id: "openai/luna" }] : [model] });
+      const respond = () => response({ models: process.env.SIDEKICKS_FAKE_MODELS ? JSON.parse(process.env.SIDEKICKS_FAKE_MODELS) : mode.startsWith("switch") ? ["scripted", "next", "plain"].map((id) => ({ provider: "local", id })) : mode === "catalog" ? [{ provider: "openai", id: "luna" }, { provider: "codex", id: "luna" }, { provider: "gateway", id: "openai/luna" }] : [model] });
       if (mode === "slow") setTimeout(respond, 100);
       else respond();
       break;
     }
-    case "set_model": model = { provider: command.provider, id: command.modelId }; response(model); break;
-    case "get_available_thinking_levels": response({ levels: ["off", "low"] }); break;
-    case "set_thinking_level": thinkingLevel = command.level; response(); break;
+    case "set_model": {
+      if (mode === "switch-rollback" && switched && command.modelId === "scripted") {
+        emit({ type: "response", id: command.id, command: command.type, success: false, error: "Scripted rollback failure" });
+        break;
+      }
+      const select = () => { model = { provider: command.provider, id: command.modelId }; switched ||= command.modelId === "next"; response(model); };
+      if (mode === "switch-slow" && command.modelId === "next") setTimeout(select, 100);
+      else select();
+      break;
+    }
+    case "get_available_thinking_levels": response({ levels: model.id === "plain" ? ["off"] : ["off", "low"] }); break;
+    case "set_thinking_level":
+      if (["switch-partial", "switch-rollback"].includes(mode) && model.id === "next") emit({ type: "response", id: command.id, command: command.type, success: false, error: "Scripted thinking failure" });
+      else { thinkingLevel = mode === "switch-clamp" && model.id === "next" ? "off" : command.level; response(); }
+      break;
     case "get_state": {
-      const state = { model, thinkingLevel, sessionFile: arg("--session"), isStreaming: prompts > 0 };
+      const state = { model, thinkingLevel, sessionFile: arg("--session"), isStreaming };
       if (mode === "out-of-order") setTimeout(() => response(state), 30);
       else response(state);
       break;
@@ -55,10 +69,11 @@ input.on("line", (line) => {
       break;
     }
     case "clear_queue": response({ steering: [], followUp: [] }); break;
-    case "abort": emit({ type: "agent_settled", aborted: true }); response(); break;
+    case "abort": isStreaming = false; emit({ type: "agent_settled", aborted: true }); response(); break;
     case "prompt": {
       prompts++;
-      if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);
+      isStreaming = true;
+      if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, model, thinkingLevel, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);
       response({ disposition: "started" });
       if (mode === "metrics" || mode === "metrics-unavailable") setImmediate(() => {
         for (const toolCallId of ["outer", "outer/1"]) {
@@ -84,7 +99,7 @@ input.on("line", (line) => {
           complete();
         }, 200);
       });
-      if (mode === "complete" || mode === "long-result" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
+      if ((mode.startsWith("switch") && !(mode === "switch-failure" && prompts === 1)) || mode === "complete" || mode === "long-result" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
       if (mode === "exit" || (mode === "batch" && command.message.includes("outcome=exit"))) setImmediate(() => process.exit(0));
       if (mode === "question" && prompts === 1) setImmediate(() => {
         const event = { type: "entry_appended", entry: { type: "custom", customType: "sidekicks:question",
@@ -94,12 +109,13 @@ input.on("line", (line) => {
         settled();
       });
       if (mode === "question" && prompts > 1) setImmediate(complete);
-      if (mode === "failure" || (mode === "batch" && command.message.includes("outcome=failure"))) setImmediate(() => {
+      if (mode === "failure" || (mode === "switch-failure" && prompts === 1) || (mode === "batch" && command.message.includes("outcome=failure"))) setImmediate(() => {
         emit({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "scripted provider failed" } });
         settled();
       });
       if (mode === "unexplained-abort") setImmediate(() => {
         emit({ type: "message_end", message: { role: "assistant", stopReason: "aborted", errorMessage: "remote abort" } });
+        isStreaming = false;
         emit({ type: "agent_settled", aborted: true });
       });
       if (mode === "descendant") {
