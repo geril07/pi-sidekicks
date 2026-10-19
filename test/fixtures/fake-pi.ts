@@ -7,6 +7,8 @@ const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];
 let model = { provider: "local", id: "scripted" };
 let thinkingLevel = "off";
 let prompts = 0;
+let contextTokens: number | null = 0;
+let statsRequests = 0;
 const emit = (value: object) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const settled = () => emit({ type: "agent_settled", aborted: false });
 const complete = () => {
@@ -36,6 +38,17 @@ input.on("line", (line) => {
       else response(state);
       break;
     }
+    case "get_session_stats": {
+      statsRequests++;
+      if (mode === "metrics-unavailable") {
+        emit({ type: "response", id: command.id, command: command.type, success: false, error: "Stats unavailable" });
+        break;
+      }
+      const data = { contextUsage: { tokens: contextTokens, contextWindow: 200000, percent: contextTokens === null ? null : contextTokens / 2000 } };
+      if (mode === "metrics-race" && statsRequests === 2) setTimeout(() => response(data), 100);
+      else response(data);
+      break;
+    }
     case "get_last_assistant_text": {
       if (mode === "settling-race") setTimeout(() => response({ text: "done" }), 2000);
       else response({ text: mode === "long-result" ? "x".repeat(30_000) : "done" });
@@ -47,6 +60,30 @@ input.on("line", (line) => {
       prompts++;
       if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);
       response({ disposition: "started" });
+      if (mode === "metrics" || mode === "metrics-unavailable") setImmediate(() => {
+        for (const toolCallId of ["outer", "outer/1"]) {
+          emit({ type: "tool_execution_start", toolCallId, toolName: "read", args: {} });
+          emit({ type: "tool_execution_end", toolCallId, toolName: "read", isError: true });
+        }
+        contextTokens = 42000;
+        emit({ type: "turn_end" });
+        emit({ type: "turn_end" });
+        complete();
+      });
+      if (mode === "metrics-race") setImmediate(() => {
+        contextTokens = 42000;
+        emit({ type: "turn_end" });
+        setTimeout(() => {
+          contextTokens = null;
+          emit({ type: "compaction_start", reason: "threshold" });
+          emit({ type: "compaction_end", reason: "threshold" });
+        }, 20);
+        setTimeout(() => {
+          contextTokens = 5000;
+          emit({ type: "turn_end" });
+          complete();
+        }, 200);
+      });
       if (mode === "complete" || mode === "long-result" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
       if (mode === "exit" || (mode === "batch" && command.message.includes("outcome=exit"))) setImmediate(() => process.exit(0));
       if (mode === "question" && prompts === 1) setImmediate(() => {

@@ -52,6 +52,28 @@ test("rows show name, agent, model, state and elapsed time; a failure keeps its 
   assert.equal(widget.render(120).length, 1);
 });
 
+test("each row shows turns, tools and current/max context on one line without spend or compactions", () => {
+  const children = [child("one"), child("two"), child("three")];
+  children[0].run = { ...children[0].run, turns: 5, tools: 12 };
+  children[0].contextUsage = { tokens: 42000, contextWindow: 200000, percent: 21 };
+  children[1].run = { ...children[1].run, turns: 0, tools: 0, state: "waiting" };
+  children[1].contextUsage = { tokens: null, contextWindow: 200000, percent: null };
+  children[2].run = { ...children[2].run, turns: 3, tools: 7, state: "completed", endedAt: Date.now() };
+  children[2].contextUsage = { tokens: 25300, contextWindow: 200000, percent: 12.65 };
+  const widget = new StatusWidget(() => children);
+  widget.toggle();
+  const rows = widget.render(140).slice(1);
+  assert.equal(rows.length, 3);
+  assert.match(rows[0], /running\s+5 turns · 12 tools · ctx 42k\/200k\s+1m/);
+  assert.match(rows[1], /waiting\s+0 turns · 0 tools · ctx —\/200k/);
+  assert.match(rows[2], /completed\s+3 turns · 7 tools · ctx 25\.3k\/200k/);
+  assert.doesNotMatch(rows.join("\n"), /tokens|\$|compaction|%/);
+  children[0].contextUsage = { tokens: 0, contextWindow: 200000, percent: 0 };
+  assert.match(widget.render(140)[1], /ctx 0\/200k/);
+  children[0].contextUsage = undefined;
+  assert.match(widget.render(140)[1], /ctx —\/—/);
+});
+
 test("live children come first in launch order, finished ones follow newest first, and ten rows fit before scrolling", () => {
   const at = (id: string, state: "running" | "waiting" | "completed" | "failed", ended?: number): ChildSnapshot => ({ ...child(id), name: id,
     run: { id: `run-${id}`, number: 1, state, delivered: false, startedAt: Date.now() - 100_000, ...(ended ? { endedAt: Date.now() - ended } : {}) } });

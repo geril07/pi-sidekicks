@@ -1,7 +1,7 @@
 # V1 implementation brief
 
 Updated 2026-10-19. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local TypeScript checking, 105 scripted-provider/unit tests, and all four optional
+Local TypeScript checking, 110 scripted-provider/unit tests, and all four optional
 terminal scenarios pass. The operator runs the extension from this checkout, but the
 real provider/MCP combination has no recorded smoke.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
@@ -184,7 +184,16 @@ focused component is the main editor (editor-shaped and its text equals
 and passes through. Escape and Up on the first row also close it. Relayed child
 dialogs call `suspend()` so they own the keyboard. No overlay and no registered shortcuts. The summary line and rows toggle on click
 (fullscreen only). Selection tracks child IDs. Rows show state, name, agent, model,
-elapsed time, and the first line of a failure; no tool activity or question text. Enter
+elapsed time, completed turns and started tool calls for the current assignment,
+current/max context, and the first line of a failure; no tool activity or question text.
+Counters reset on a new assignment but continue through guidance and answers;
+nested and failed tool starts count. Context comes from public RPC `get_session_stats`
+at startup, assistant message completion, turn completion, and compaction completion.
+Requests are event-driven, not periodic polling; stale replies are ignored, and
+missing usage (including after compaction) renders as `—`, never fabricated zero.
+Telemetry is optional and cannot fail an assignment. Latest metrics are persisted
+with child metadata; old records without counters show `—` until a new assignment.
+No cumulative token spend, price, or compaction count is shown. Enter
 shows only the storage folder. Order: starting/running/waiting children first in launch
 order (rows stay put), then finished ones by end time, newest first; selection tracks the
 child ID, so a row that finishes moves under the cursor. Ten rows are visible and the
@@ -275,6 +284,9 @@ Verified locally without a billable model or external MCP call:
   stop/send release behavior, restored held results without duplicate delivery, and
   bounded/sanitized group rendering. Boot-ID mismatch with a live PID, same-boot
   refusal, legacy PID-only locks, and partial-change follow-up hints.
+- Per-assignment turn/tool counters, nested and failed tool starts, persisted metrics,
+  real-Pi context usage, stale replies across compaction, and optional telemetry failures.
+  One-line metrics verified in fullscreen and regular terminals with a local provider.
 - Fullscreen and regular terminal Down-arrow selection, draft preservation,
   unrelated dialogs, collapsed-paste submission, mouse toggles, shutdown cleanup,
   and batch message expansion/click collapse.

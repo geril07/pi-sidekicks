@@ -130,7 +130,11 @@ export class StatusWidget implements Component {
     const reason = ["failed", "interrupted"].includes(child.run.state) ? child.run.result?.split("\n").find((line) => line.trim()) ?? "" : "";
     const left = `${selected ? style.fg("accent", ">") : " "} ${stateGlyph(style, child.run.state)} ${style.bold(plain(child.name))} ${style.fg("dim", `${plain(agent)}${plain(modelLabel(child))}`)} ${state}${reason ? style.fg("muted", ` · ${plain(reason)}`) : ""}`;
     const elapsed = elapsedOf(child.run);
-    return rightAlign(` ${left}`, elapsed ? style.fg("dim", elapsed) : "", width);
+    const compact = (value: number) => value < 1000 ? String(Math.round(value)) : `${Number((value / 1000).toFixed(1))}k`;
+    const usage = child.contextUsage;
+    const context = `${usage?.tokens == null ? "—" : compact(usage.tokens)}/${usage ? compact(usage.contextWindow) : "—"}`;
+    const metrics = `${child.run.turns ?? "—"} turns · ${child.run.tools ?? "—"} tools · ctx ${context}`;
+    return rightAlign(` ${left}`, style.fg("dim", `${metrics}${elapsed ? `    ${elapsed}` : ""}`), width);
   }
 
   /** Where the child's transcript and result files live, for finding them from a shell. */

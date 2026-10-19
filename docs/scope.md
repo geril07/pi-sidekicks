@@ -37,7 +37,9 @@ large extension. The first implementation starts fresh over ordinary Pi RPC.
 - Show useful identity/progress: role or name, model, state, and elapsed time. Exact labels
   and placement are not settled. Later correction (2026-10-19): the widget does not show
   current activity (tool calls) or question/prompt text; a failure keeps its first line.
-  Enter shows only the storage folder.
+  Later addition: keep each child on one line and add turns, tool-call count, and
+  current/max context (`5 turns · 12 tools · ctx 42k/200k`). No cumulative token
+  spend, cost estimate, or compaction count. Enter shows only the storage folder.
 - UX correction (2026-10-18): the first widget was rejected. Follow the nicobailon
   pattern: Down from the editor enters the list; no shortcut hints in the status
   line; `Ctrl+Alt+N` did not work for the operator and was removed. Results and

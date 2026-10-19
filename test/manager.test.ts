@@ -34,6 +34,50 @@ async function harness(mode = "hold") {
   return { manager, options, directory, records, deliveries, groups, waitFor, launch };
 }
 
+test("widget metrics count completed turns and started tools per assignment, retain context, and survive restore", async (t) => {
+  const h = await harness("metrics");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed" && h.manager.snapshot()[0].contextUsage?.tokens === 42000);
+  const first = h.manager.snapshot()[0];
+  assert.equal(first.run.turns, 2);
+  assert.equal(first.run.tools, 2, "nested and failed calls also count");
+  assert.deepEqual(first.contextUsage, { tokens: 42000, contextWindow: 200000, percent: 21 });
+  first.contextUsage!.tokens = 99;
+  assert.equal(h.manager.snapshot()[0].contextUsage?.tokens, 42000, "snapshots do not mutate manager state");
+  await h.manager.send(child.id, "Continue");
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  assert.equal(h.manager.snapshot()[0].run.turns, 2, "follow-up starts fresh counters");
+  assert.equal(h.manager.snapshot()[0].run.tools, 2);
+  await h.manager.shutdown();
+  const restored = new Manager({ ...h.options, restored: [...h.records.values()] });
+  t.after(() => restored.shutdown());
+  assert.equal(restored.snapshot()[0].run.turns, 2);
+  assert.equal(restored.snapshot()[0].run.tools, 2);
+  assert.equal(restored.snapshot()[0].contextUsage?.tokens, 42000);
+});
+
+test("late pre-compaction telemetry cannot restore stale context, and fresh usage recovers", async (t) => {
+  const h = await harness("metrics-race");
+  t.after(() => h.manager.shutdown());
+  await h.launch();
+  await h.waitFor(() => h.manager.snapshot()[0].run.turns === 1 && h.manager.snapshot()[0].contextUsage?.tokens === null);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.equal(h.manager.snapshot()[0].contextUsage?.tokens, null);
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed" && h.manager.snapshot()[0].contextUsage?.tokens === 5000);
+});
+
+test("unavailable telemetry does not fail an assignment or fabricate zero context", async (t) => {
+  const h = await harness("metrics-unavailable");
+  t.after(() => h.manager.shutdown());
+  await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  assert.equal(h.manager.snapshot()[0].run.state, "completed");
+  assert.equal(h.manager.snapshot()[0].run.turns, 2);
+  assert.equal(h.manager.snapshot()[0].run.tools, 2);
+  assert.equal(h.manager.snapshot()[0].contextUsage, undefined);
+});
+
 test("launch allows more than three assignments, and stop retains the session identity", async (t) => {
   const h = await harness();
   t.after(() => h.manager.shutdown());

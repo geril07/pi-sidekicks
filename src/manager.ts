@@ -2,16 +2,17 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
+import type { ContextUsage, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
 
 export type Thinking = RpcSessionState["thinkingLevel"];
 export type RunState = "starting" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "interrupted";
 export interface Question { id: string; text: string; delivered?: boolean }
-export interface Run { groupId?: string; id: string; /** 1-based position in the child's conversation; names the run's task and result files. */ number: number; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number }
+export interface Run { groupId?: string; id: string; /** 1-based position in the child's conversation; names the run's task and result files. */ number: number; state: RunState; question?: Question; result?: string; resultFile?: string; delivered: boolean; startedAt?: number; endedAt?: number; turns?: number; tools?: number }
 export interface ChildRecord {
   id: string; ownerSessionId: string; name: string; agent: string; instructions: string;
   cwd: string; sessionPath: string; model: string; thinking: Thinking; run: Run;
+  contextUsage?: ContextUsage;
   questions?: (Question & { runId: string })[];
 }
 export interface ChildSnapshot {
@@ -19,13 +20,14 @@ export interface ChildSnapshot {
   /** Only set when the child works somewhere other than the parent's directory. */
   cwd?: string;
   run: Run; connected: boolean; activity: string; sessionPath: string;
+  contextUsage?: ContextUsage;
   questions?: (Question & { runId: string })[];
 }
 interface Child {
   record: ChildRecord; rpc?: RpcConnection; release?: () => void; closing?: Promise<void>;
   stopRequested: boolean; operation: boolean; settling: boolean; activity: string;
   controller: AbortController; lastError?: string; lastAborted?: boolean;
-  seenQuestions: Set<string>;
+  seenQuestions: Set<string>; contextRequest: number;
 }
 export interface ManagerOptions {
   ownerSessionId: string; directory: string; cwd: string; trusted: boolean;
@@ -111,7 +113,7 @@ export class Manager {
 
   private child(record: ChildRecord): Child {
     return { record, stopRequested: false, operation: false, settling: false,
-      activity: "detached", controller: new AbortController(), seenQuestions: new Set() };
+      activity: "detached", controller: new AbortController(), seenQuestions: new Set(), contextRequest: 0 };
   }
 
   snapshot(): ChildSnapshot[] { return [...this.children.values()].map((child) => this.view(child)); }
@@ -119,6 +121,7 @@ export class Manager {
   private view(child: Child): ChildSnapshot {
     const { id, name, agent, model, thinking, run, sessionPath, cwd } = child.record;
     return { id, name, agent, model, thinking, ...(cwd !== this.options.cwd ? { cwd } : {}), run: structuredClone(run), sessionPath,
+      contextUsage: structuredClone(child.record.contextUsage),
       connected: !!child.rpc && !child.closing, activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
@@ -159,7 +162,7 @@ export class Manager {
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
       sessionPath: join(this.options.directory, id, "session.jsonl"), model: input.model, thinking: input.thinking,
-      run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now() } });
+      run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 } });
     this.children.set(id, child);
     this.commit(child);
     const prompt = frame("Task", input.task);
@@ -190,7 +193,7 @@ export class Manager {
       if (previous.state === "interrupted" || previous.state === "cancelled") {
         message = `Your previous run was ${previous.state === "cancelled" ? "stopped" : "interrupted"}. You may have made partial changes. Check the current state before repeating anything.\n${message}`;
       }
-      child.record.run = { id: randomUUID(), number: previous.number + 1, state: "starting", delivered: false, startedAt: Date.now() };
+      child.record.run = { id: randomUUID(), number: previous.number + 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 };
       this.releaseHeld();
       child.lastError = undefined;
       this.commit(child);
@@ -327,6 +330,26 @@ export class Manager {
     }
     if (state.sessionFile !== record.sessionPath) throw new Error("Child opened a different session file");
     record.model = `${model.provider}/${model.id}`;
+    if (model.contextWindow > 0) record.contextUsage = { tokens: null, percent: null, contextWindow: model.contextWindow };
+    void this.refreshContext(child);
+  }
+
+  private async refreshContext(child: Child): Promise<void> {
+    const rpc = child.rpc;
+    if (!rpc || child.closing || !this.alive) return;
+    const request = ++child.contextRequest;
+    try {
+      const stats = await rpc.request({ type: "get_session_stats" }, 3000);
+      if (!this.alive || child.rpc !== rpc || child.closing || request !== child.contextRequest) return;
+      child.record.contextUsage = stats?.contextUsage ?? (child.record.contextUsage && { ...child.record.contextUsage, tokens: null, percent: null });
+      this.commit(child);
+    } catch {
+      // Missing telemetry must not fail or delay an assignment's settlement.
+      if (this.alive && child.rpc === rpc && !child.closing && request === child.contextRequest) {
+        if (child.record.contextUsage) child.record.contextUsage = { ...child.record.contextUsage, tokens: null, percent: null };
+        this.commit(child);
+      }
+    }
   }
 
   private receive(child: Child, event: RpcEvent): void {
@@ -365,9 +388,20 @@ export class Manager {
       child.lastError = event.message.stopReason === "error"
         ? event.message.errorMessage ?? `Assistant ${event.message.stopReason}` : undefined;
       child.lastAborted = event.message.stopReason === "aborted";
+      void this.refreshContext(child);
+    } else if (event.type === "turn_end") {
+      if (active(run.state)) { run.turns = (run.turns ?? 0) + 1; this.commit(child); }
+      void this.refreshContext(child);
+    } else if (event.type === "compaction_start") {
+      child.contextRequest++;
+      if (child.record.contextUsage) child.record.contextUsage = { ...child.record.contextUsage, tokens: null, percent: null };
+      this.commit(child);
+    } else if (event.type === "compaction_end") {
+      void this.refreshContext(child);
     } else if (event.type === "tool_execution_start") {
+      if (active(run.state)) run.tools = (run.tools ?? 0) + 1;
       child.activity = describeTool(event.toolName, event.args);
-      this.commit(child, false);
+      this.commit(child);
     } else if (event.type === "tool_execution_end") {
       child.activity = "working";
       this.commit(child, false);

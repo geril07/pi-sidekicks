@@ -87,8 +87,12 @@ children exist, it shows a one-line summary (running, waiting, failed, done, sto
 and remains available for follow-up. Questions and results arrive as transcript messages.
 
 - Down on an empty editor enters the list; any other key goes to the editor as usual.
-- Rows show state, name, agent, model and elapsed time (plus the first line of a
-  failure). No tool calls or prompt text. Live children come first, in launch order;
+- Rows show state, name, agent, model, `5 turns · 12 tools · ctx 42k/200k`, and
+  elapsed time (plus the first line of a failure). Turns count completed assistant
+  cycles; tools count started calls, including nested and failed calls. Both reset
+  for a new assignment, not for guidance or an answer. Context is Pi's current
+  estimate / model window, not cumulative token spend; unknown values show `—`.
+  No tool activity or prompt text. Live children come first, in launch order;
   finished ones follow, newest first. Ten rows show at once, and Up/Down scrolls the
   rest (`↑ N more`, `↓ N more`).
 - Up/Down (or j/k) selects, Enter toggles the row's own folder (transcript, prompt and

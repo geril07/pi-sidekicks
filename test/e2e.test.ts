@@ -299,6 +299,10 @@ test(`real parent extension launches, receives a question, answers, and gets com
   assert.equal(child.run.state, "completed");
   assert.equal(child.model, "sidekicks-test/scripted");
   assert.equal(child.thinking, "low");
+  assert.equal(child.run.turns, 2, "answer continues the same assignment's turn counter");
+  assert.equal(child.run.tools, 3, "started calls include siblings blocked by the question barrier");
+  assert(child.contextUsage && child.contextUsage.contextWindow > 0);
+  assert.equal(typeof child.contextUsage.tokens, "number", "context comes from real Pi session stats");
   if (scenario === "nonblocking-parent") assert.equal(child.instructions.trim(), "Custom configured instructions.");
   const transcript = await readFile(child.sessionPath, "utf8");
   if (scenario === "nonblocking-parent") assert.match(transcript, /Custom configured instructions\.\\n\\nYour final message is your result/, "the inline system prompt reaches the child");

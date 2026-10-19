@@ -101,9 +101,11 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     };
     await waitFor((text) => /▸ sidekicks .*1 done/.test(text), "collapsed summary after completion");
     keys("Down");
-    await waitFor((text) => text.includes("esc back"), "down on an empty editor enters the list");
+    const metrics = await waitFor((text) => /2 turns · 3 tools · ctx [\d.k]+\/[\d.k]+/.test(text), "down shows turns, tools and current/max context");
+    assert(metrics.includes("esc back"), "down on an empty editor enters the list");
+    writeFileSync(join(directory, "metrics.txt"), metrics);
     keys("Down", "Enter");
-    await waitFor((text) => text.includes(`${agent}/sidekicks/`), "enter shows the storage folder");
+    await waitFor((text) => text.includes(`${agent}/sidekick-sessions/`), "enter shows the storage folder");
     keys("Escape");
     await waitFor((text) => !text.includes("esc back") && /▸ sidekicks/.test(text), "escape returns to the editor and collapses");
     keys("Down");
