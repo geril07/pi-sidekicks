@@ -1,9 +1,9 @@
 # V1 implementation brief
 
-Updated 2026-10-18. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
-Local TypeScript checking, 74 scripted-provider/unit tests, and all four optional
-terminal scenarios pass. The operator's real
-provider/MCP combination is not verified, and the extension is not enabled there.
+Updated 2026-10-19. The first runtime is implemented for Pi 1.3.x and Node >=22.19.0.
+Local TypeScript checking, 105 scripted-provider/unit tests, and all four optional
+terminal scenarios pass. The operator runs the extension from this checkout, but the
+real provider/MCP combination has no recorded smoke.
 [Scope](scope.md) remains the product contract; [README](../README.md) covers use.
 
 ## Technical design

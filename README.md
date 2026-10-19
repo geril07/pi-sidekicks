@@ -3,8 +3,9 @@
 A personal Pi extension for asynchronous child agents with reusable definitions.
 
 **Status:** first implementation, tested locally with Pi 1.3.0 and scripted models.
-The operator's real provider/MCP configuration has not been smoke-tested. This
-extension is not installed or enabled in the operator's settings.
+The operator runs it from this checkout (a local-path entry in Pi `packages`; the old
+pi-subagents entry has empty resource filters), but no real-provider/MCP smoke has been
+recorded here.
 
 ## Try it
 
