@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Agent } from "./agents.ts";
 import type { ChildSnapshot, Question, Run, RunState } from "./manager.ts";
@@ -56,13 +57,14 @@ const preview = (text: string, length: number) => {
 /** One line the model can scan: handle first, because it is the argument of every follow-up call. */
 export function describeChild(child: ChildSnapshot): string {
   const run = child.run;
-  if (child.external) return `${child.name} (${child.agent}, ${modelLabel(child)}) — managed by another window; saved status: ${STATES[run.state].word}${run.resultFile ? ` (result file: ${run.resultFile})` : ""}. send/answer/stop are unavailable while it owns the child.`;
+  const storage = `\n  id: ${child.id}\n  folder: ${dirname(child.sessionPath)}`;
+  if (child.external) return `${child.name} (${child.agent}, ${modelLabel(child)}) — managed by another window; saved status: ${STATES[run.state].word}${run.resultFile ? ` (result file: ${run.resultFile})` : ""}. send/answer/stop are unavailable while it owns the child.${storage}`;
   const detail = run.question ? `asks ${run.question.id}: ${preview(run.question.text, 160)}`
     : isActive(run.state) ? child.connected ? child.activity : "detached" : preview(run.result ?? "", 160);
   const questions = child.questions?.length ? `; ${child.questions.length} open non-blocking question(s): ${child.questions.map((q) => q.id).join(", ")}` : "";
   const file = !isActive(run.state) && run.resultFile ? ` (result file: ${run.resultFile})` : "";
   const measurement = progress(child);
-  return `${child.name} (${child.agent}, ${modelLabel(child)}${child.cwd ? `, cwd ${child.cwd}` : ""}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${measurement ? ` · ${measurement}` : ""}${detail ? `: ${detail}` : ""}${file}${questions}`;
+  return `${child.name} (${child.agent}, ${modelLabel(child)}${child.cwd ? `, cwd ${child.cwd}` : ""}) — ${STATES[run.state].word}${elapsedOf(run) ? ` ${elapsedOf(run)}` : ""}${measurement ? ` · ${measurement}` : ""}${detail ? `: ${detail}` : ""}${file}${questions}${storage}`;
 }
 
 /** Raw numbers, because the parent model compares them and the widget owns its own formatting. */

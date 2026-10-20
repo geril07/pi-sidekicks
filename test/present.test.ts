@@ -22,7 +22,7 @@ test("tool activity is a bounded one-line label", () => {
 });
 
 test("model-facing text names the child and tells the parent how to reply", () => {
-  assert.match(describeChild(child), /^explorer-1 \(explorer, gpt-6:high\) — running 1\ds: read src\/a\.ts$/);
+  assert.match(describeChild(child), /^explorer-1 \(explorer, gpt-6:high\) — running 1\ds: read src\/a\.ts$/m);
   const question = deliveryText(child, "question", { id: "ab12cd34", text: "Which option?" }, true);
   assert.match(question, /explorer-1 asks \(question ab12cd34; blocking/);
   assert.match(question, /"child":"explorer-1","questionId":"ab12cd34"/);
@@ -31,7 +31,16 @@ test("model-facing text names the child and tells the parent how to reply", () =
   assert.match(result, /^Sidekick explorer-1 completed after 12s\./);
   assert.match(result, /Found it\./);
   assert.doesNotMatch(result, /"runId"|childId/, "no JSON bookkeeping in the model-facing text");
-  assert.match(statusText([child], [{ name: "explorer", description: "d", instructions: "" }]), /Children:\n- explorer-1.*\nAgents: explorer/);
+  assert.match(statusText([child], [{ name: "explorer", description: "d", instructions: "" }]), /Children:\n- explorer-1.*\n  id: uuid\n  folder: \/\nAgents: explorer/);
+});
+
+test("child descriptions expose the stable ID and full storage folder", () => {
+  const stored = { ...child, id: "12345678-abcd", sessionPath: "/home/operator/.pi/agent/sidekick-sessions/12345678-abcd/session.jsonl" };
+  for (const external of [false, true]) {
+    const text = describeChild({ ...stored, external });
+    assert.match(text, /^  id: 12345678-abcd$/m);
+    assert.match(text, /^  folder: \/home\/operator\/\.pi\/agent\/sidekick-sessions\/12345678-abcd$/m);
+  }
 });
 
 test("foreign children show saved ownership without a live clock or a reply instruction", () => {
@@ -45,7 +54,7 @@ test("foreign children show saved ownership without a live clock or a reply inst
 test("status carries turns, tool calls and context usage", () => {
   const tracked = { ...child, run: { ...child.run, turns: 38, tools: 47 },
     contextUsage: { tokens: 137_700, percent: 13.77, contextWindow: 1_000_000 } };
-  assert.match(describeChild(tracked), /— running 1\ds · 38 turns · 47 tools · ctx 137700\/1000000: read src\/a\.ts$/);
+  assert.match(describeChild(tracked), /— running 1\ds · 38 turns · 47 tools · ctx 137700\/1000000: read src\/a\.ts$/m);
   assert.match(describeChild({ ...tracked, contextUsage: { tokens: null, percent: null, contextWindow: 1_000_000 } }),
     /ctx unknown\/1000000/, "post-compaction telemetry reads as unknown, not as zero");
   assert.doesNotMatch(describeChild({ ...child, run: { ...child.run, turns: 0, tools: 0 } }), /ctx|turns 0/, "no context window, no ctx field");
@@ -56,7 +65,7 @@ test("the parent is told which file holds the answer and which holds the whole s
   const delivery = deliveryText(done, "result");
   assert.match(delivery, /^Saved copy of the text above: \/c\.result\.md$/m);
   assert.match(delivery, /^Full session transcript: \/c\.jsonl$/m);
-  assert.match(describeChild(done), /: Found it\. \(result file: \/c\.result\.md\)$/);
+  assert.match(describeChild(done), /: Found it\. \(result file: \/c\.result\.md\)$/m);
   assert.doesNotMatch(describeChild({ ...child, run: { ...child.run, resultFile: "/stale.result.md" } }), /result file/, "an active run has no result yet");
   assert.doesNotMatch(deliveryText({ ...done, run: { ...done.run, resultFile: undefined } }, "result"), /Saved copy/, "no file, no claim about one");
 });
