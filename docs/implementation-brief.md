@@ -47,8 +47,13 @@ claim that 64 full Pi processes have been validated. Typical usage is not a limi
    can invalidate the provider's cached prefix, so the list must not change mid-session. A bad
    definition file is skipped with a single `ctx.ui.notify` warning listing path and reason;
    only an unusable folder or setting (the whole scan) is an error.
-2. Reserve an assignment slot, create the child's folder `<agentDir>/sidekick-sessions/<child-id>/`,
-   and acquire an exclusive writer lock (`session.jsonl.lock`) there. The folder holds
+2. Reserve an assignment slot, create the child's folder
+   `<parent-session-dir>/<parent-session-stem>/sidekicks/<child-id>/`, and acquire an
+   exclusive writer lock (`session.jsonl.lock`) there. The path is derived from the
+   current parent session file, not a global child root; each child is stored under
+   `sidekicks/`, a namespace separate from other extensions that share the parent-stem
+   container.
+   The folder holds
    `session.jsonl`, `task-N.md` (the exact prompt that started run N) and `result-N.md`
    (plain final text of completed run N; no other state writes one).
 3. Start the parent's Pi CLI with `--mode rpc`, explicit `--session`, an inline

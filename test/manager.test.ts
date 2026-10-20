@@ -13,7 +13,7 @@ async function harness(mode = "hold") {
   const groups: ChildSnapshot[][] = [];
   const waiters = new Set<() => void>();
   const options: ManagerOptions = {
-    ownerSessionId: "parent", directory, cwd: directory, trusted: false,
+    ownerSessionId: "parent", parentSessionFile: () => join(directory, "parent.jsonl"), cwd: directory, trusted: false,
     invocation: { command: process.execPath, args: [resolve("test/fixtures/fake-pi.ts")] },
     env: { ...process.env, SIDEKICKS_FAKE_SCENARIO: mode, SIDEKICKS_FAKE_LOG: join(directory, "prompts.jsonl"), SIDEKICKS_DESCENDANT_PID: join(directory, "descendant.pid") },
     persist: (record) => { records.set(record.id, record); },
@@ -33,6 +33,46 @@ async function harness(mode = "hold") {
     task: "Work", model: "local/scripted", thinking: "off" });
   return { manager, options, directory, records, deliveries, groups, waitFor, launch };
 }
+
+test("children live under the parent session's sidekicks directory, not a global store", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  assert.equal(child.sessionPath, join(h.directory, "parent", "sidekicks", child.id, "session.jsonl"));
+  assert.equal((await readdir(h.directory)).includes("sidekick-sessions"), false, "no global child store is created");
+});
+
+test("restore derives the sidekicks location even when the saved record has a legacy path", async (t) => {
+  const h = await harness("complete");
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.manager.shutdown();
+  const legacy = join(h.directory, "sidekick-sessions", child.id, "session.jsonl");
+  const restored = new Manager({ ...h.options, restored: [{ ...h.records.get(child.id)!, sessionPath: legacy }] });
+  t.after(() => restored.shutdown());
+  const snapshot = restored.snapshot()[0];
+  assert.equal(snapshot.sessionPath, join(h.directory, "parent", "sidekicks", child.id, "session.jsonl"));
+  assert.equal(snapshot.run.state, "completed");
+});
+
+test("two children of one parent share the sidekicks container but not a child folder", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const [one, two] = await Promise.all([h.launch("one"), h.launch("two")]);
+  assert.equal(dirname(dirname(one.sessionPath)), join(h.directory, "parent", "sidekicks"));
+  assert.equal(dirname(dirname(two.sessionPath)), join(h.directory, "parent", "sidekicks"));
+  assert.notEqual(dirname(one.sessionPath), dirname(two.sessionPath));
+});
+
+test("a launch without a parent session file fails before spawning a child", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const manager = new Manager({ ...h.options, parentSessionFile: () => undefined });
+  t.after(() => manager.shutdown());
+  await assert.rejects(manager.launch({ agent: "w", instructions: "Work", name: "w", task: "Work", model: "local/scripted", thinking: "off" }),
+    /parent session has no file/i);
+  assert.equal(manager.snapshot().length, 0);
+});
 
 test("widget metrics count completed turns and started tools per assignment, retain context, and survive restore", async (t) => {
   const h = await harness("metrics");
@@ -164,7 +204,7 @@ test("a completed run writes its full result as plain text in the child's folder
   await h.waitFor(() => h.deliveries.length === 1);
   const first = h.deliveries[0].child;
   const folder = dirname(first.sessionPath);
-  assert.equal(folder, join(h.directory, first.id));
+  assert.equal(folder, join(h.directory, "parent", "sidekicks", first.id));
   const file = join(folder, "result-1.md");
   assert.equal(first.run.resultFile, file);
   assert(first.run.result!.endsWith(`[Truncated. Full result: ${file}]`));

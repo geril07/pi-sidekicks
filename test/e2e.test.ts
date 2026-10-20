@@ -261,7 +261,7 @@ test(`nonblocking questions notify during work, accept correlated active/idle re
   const h = await isolated("nonblocking");
   const gate = join(h.dir, "release-effect");
   const deliveries: { child: ChildSnapshot; kind: string; questionId?: string }[] = [];
-  const manager = new Manager({ ownerSessionId: "real-parent", directory: join(h.dir, "children"), cwd: h.dir, trusted: false,
+  const manager = new Manager({ ownerSessionId: "real-parent", parentSessionFile: () => join(h.dir, "parent.jsonl"), cwd: h.dir, trusted: false,
     invocation: { command: process.execPath, args: [cli] },
     env: { ...h.env, SIDEKICKS_TEST_GATE: gate, SIDEKICKS_TEST_BATCH: '["ask_parent","effect","ask_parent","ask_parent"]' },
     persist() {}, changed() {}, dialog: async () => undefined,
@@ -324,7 +324,7 @@ test(`nonblocking questions notify during work, accept correlated active/idle re
 test("a nonblocking reply does not resume or cancel a later blocking question", { timeout: 30_000 }, async (t) => {
   const h = await isolated("mixed-questions");
   const notifications: string[] = [];
-  const manager = new Manager({ ownerSessionId: "real-parent", directory: join(h.dir, "children"), cwd: h.dir, trusted: false,
+  const manager = new Manager({ ownerSessionId: "real-parent", parentSessionFile: () => join(h.dir, "parent.jsonl"), cwd: h.dir, trusted: false,
     invocation: { command: process.execPath, args: [cli] }, env: h.env,
     persist() {}, changed() {}, dialog: async () => undefined,
     deliver: (_child, kind) => { notifications.push(kind); },
@@ -421,7 +421,7 @@ test("real child reopens its persisted conversation, loading ambient extensions 
   const h = await isolated("reopen");
   const deliveries: ChildSnapshot[] = [];
   let resolveDelivery: (() => void) | undefined;
-  const manager = new Manager({ ownerSessionId: "real-parent", directory: join(h.dir, "children"), cwd: h.dir, trusted: false,
+  const manager = new Manager({ ownerSessionId: "real-parent", parentSessionFile: () => join(h.dir, "parent.jsonl"), cwd: h.dir, trusted: false,
     invocation: { command: process.execPath, args: [cli] }, env: h.env,
     persist() {}, changed() {}, dialog: async () => undefined,
     deliver: (child) => { deliveries.push(child); resolveDelivery?.(); },

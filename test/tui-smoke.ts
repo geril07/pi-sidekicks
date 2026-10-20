@@ -36,7 +36,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   const keys = (...values: string[]) => { tmux("send-keys", "-t", "qa", ...values); };
   const shortcut = (letter: string) => literal(`\x1b${String.fromCharCode(letter.charCodeAt(0) - 96)}`);
   const paneDead = () => tmux("display-message", "-p", "-t", "qa", "#{pane_dead}").trim() === "1";
-  const noLocks = () => assert.equal([...globSync("sidekick-sessions/**/*.lock", { cwd: agent })].length, 0, "graceful shutdown releases child writer locks");
+  const noLocks = () => assert.equal([...globSync("parent/sidekicks/**/*.lock", { cwd: directory })].length, 0, "graceful shutdown releases child writer locks");
   const command = ["env", `PI_CODING_AGENT_DIR=${agent}`, `SIDEKICKS_TEST_LOG=${log}`,
     `SIDEKICKS_TEST_SCENARIO=${scenario}`,
     ...(scenario === "batch-parent" ? [`SIDEKICKS_TEST_LAUNCH=${JSON.stringify({ tasks: [{ agent: "worker", task: "Work", name: "one" }, { agent: "worker", task: "Work", name: "two" }] })}`] : []),
@@ -105,7 +105,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
     assert(metrics.includes("esc back"), "down on an empty editor enters the list");
     writeFileSync(join(directory, "metrics.txt"), metrics);
     keys("Down", "Enter");
-    await waitFor((text) => text.includes(`${agent}/sidekick-sessions/`), "enter shows the storage folder");
+    await waitFor((text) => text.includes(`${directory}/parent/sidekicks/`), "enter shows the storage folder");
     keys("Escape");
     await waitFor((text) => !text.includes("esc back") && /▸ sidekicks/.test(text), "escape returns to the editor and collapses");
     keys("Down");

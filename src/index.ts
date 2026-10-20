@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
-import { basename, join, resolve as resolvePath } from "node:path";
+import { basename, resolve as resolvePath } from "node:path";
 import { Type } from "typebox";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type RpcExtensionUIRequest, type RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import { Manager, type ChildRecord, type ChildSnapshot } from "./manager.ts";
 import { discoverAgents, parseModel, thinkingLevels, type Agent, type AgentProblem } from "./agents.ts";
 import { StatusWidget, cancellableEditor } from "./widget.ts";
@@ -95,7 +95,6 @@ export default function sidekicks(pi: ExtensionAPI): void {
 
   const start = (ctx: ExtensionContext, definitions: Definitions) => {
     const ownerSessionId = ctx.sessionManager.getSessionId();
-    const directory = join(getAgentDir(), "sidekick-sessions");
     let dialogTail: Promise<unknown> = Promise.resolve();
     const runtime = { manager: undefined as unknown as Manager, widget: undefined as unknown as StatusWidget, ctx, definitions };
     const dialog = (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal): Promise<RpcExtensionUIResponse | undefined> => {
@@ -127,7 +126,7 @@ export default function sidekicks(pi: ExtensionAPI): void {
       dialogTail = result.catch(() => {});
       return result;
     };
-    runtime.manager = new Manager({ ownerSessionId, directory, cwd: ctx.cwd, trusted: ctx.isProjectTrusted(),
+    runtime.manager = new Manager({ ownerSessionId, parentSessionFile: () => ctx.sessionManager.getSessionFile(), cwd: ctx.cwd, trusted: ctx.isProjectTrusted(),
       invocation: invocation(), restored: restored(ctx), dialog,
       persist: (record) => {
         if (ctx.sessionManager.getSessionId() === ownerSessionId) pi.appendEntry(STATE_ENTRY, record);

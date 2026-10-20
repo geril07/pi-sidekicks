@@ -189,8 +189,9 @@ model/thinking inherit the parent; move pins manually if wanted. No files are re
 These are current implementation policies, not permanent product requirements.
 See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
 
-- Each child has its own folder under Pi's user-data directory,
-  `~/.pi/agent/sidekick-sessions/<child-id>/`, which holds everything about that child:
+- Each child has its own folder beside its parent session:
+  `~/.pi/agent/sessions/<project>/<parent-session-stem>/sidekicks/<child-id>/`.
+  The folder holds everything about that child:
 
   ```text
   session.jsonl       Pi's saved conversation (the whole child session)
@@ -203,6 +204,13 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
   A blocking answer or running guidance is not a new run, so it has no task file.
   Artifact numbers span all branches and are not reused after tree navigation;
   existing files are never replaced.
+  Placing children under the parent's project means `ccusage pi daily` counts
+  their tokens and recorded cost with no extra path or named store.
+- Children created before the storage change live in the old global
+  `~/.pi/agent/sidekick-sessions/` root. With every Pi session closed, run
+  `npm run migrate:sidekick-sessions -- --dry-run`, then `--apply`. The script moves
+  each folder beside its parent and writes a manifest that `--rollback` can reverse;
+  it never edits parent transcripts.
 - A completed run writes its full result to `result-N.md` (mode 0600, no front matter,
   so the file can be moved or passed on as it is). Failed, stopped and interrupted runs
   have no result file; their short status text is in the delivery. Delivered results and

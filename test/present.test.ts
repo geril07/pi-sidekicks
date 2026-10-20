@@ -35,11 +35,11 @@ test("model-facing text names the child and tells the parent how to reply", () =
 });
 
 test("child descriptions expose the stable ID and full storage folder", () => {
-  const stored = { ...child, id: "12345678-abcd", sessionPath: "/home/operator/.pi/agent/sidekick-sessions/12345678-abcd/session.jsonl" };
+  const stored = { ...child, id: "12345678-abcd", sessionPath: "/home/operator/.pi/agent/sessions/--home-operator-project--/2026-10-20T10-00-00-000Z_parent/sidekicks/12345678-abcd/session.jsonl" };
   for (const external of [false, true]) {
     const text = describeChild({ ...stored, external });
     assert.match(text, /^  id: 12345678-abcd$/m);
-    assert.match(text, /^  folder: \/home\/operator\/\.pi\/agent\/sidekick-sessions\/12345678-abcd$/m);
+    assert.match(text, /^  folder: \/home\/operator\/\.pi\/agent\/sessions\/--home-operator-project--\/2026-10-20T10-00-00-000Z_parent\/sidekicks\/12345678-abcd$/m);
   }
 });
 

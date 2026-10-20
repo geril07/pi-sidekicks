@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ContextUsage, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "@earendil-works/pi-coding-agent";
 import { RpcConnection, type Invocation, type RpcEvent } from "./rpc.ts";
@@ -31,7 +31,7 @@ interface Child {
   seenQuestions: Set<string>; contextRequest: number; restoredRequest?: string;
 }
 export interface ManagerOptions {
-  ownerSessionId: string; directory: string; cwd: string; trusted: boolean;
+  ownerSessionId: string; parentSessionFile: () => string | null | undefined; cwd: string; trusted: boolean;
   invocation: Invocation; env?: NodeJS.ProcessEnv;
   persist: (record: ChildRecord) => void;
   deliver: (child: ChildSnapshot, kind: "question" | "result", question?: Question & { runId?: string }) => void;
@@ -102,15 +102,28 @@ export class Manager {
 
   constructor(options: ManagerOptions) {
     this.options = options;
-    mkdirSync(options.directory, { recursive: true, mode: 0o700 });
+    const directory = this.childrenDirectoryOrUndefined();
     for (const saved of options.restored ?? []) {
       if (saved.ownerSessionId !== options.ownerSessionId || !/^[\da-f-]{36}$/.test(saved.id)) continue;
-      if (saved.sessionPath !== join(options.directory, saved.id, "session.jsonl")) continue;
       if (saved.sessionLeafId !== null && typeof saved.sessionLeafId !== "string") continue;
-      const child = this.child(structuredClone(saved));
+      if (!directory) continue;
+      // The saved path is a hint only: older records may predate the storage migration.
+      const child = this.child({ ...structuredClone(saved), sessionPath: join(directory, saved.id, "session.jsonl") });
       if (!this.occupied(child)) this.detachRecord(child);
       this.children.set(saved.id, child);
     }
+  }
+
+  /** `<parent-session-dir>/<parent-stem>/sidekicks`; undefined until the parent session has a file. */
+  private childrenDirectoryOrUndefined(): string | undefined {
+    const file = this.options.parentSessionFile();
+    return file ? join(dirname(file), basename(file, ".jsonl"), "sidekicks") : undefined;
+  }
+
+  private childrenDirectory(): string {
+    const directory = this.childrenDirectoryOrUndefined();
+    if (!directory) throw new Error("The parent session has no file yet; start a parent turn before launching a child.");
+    return directory;
   }
 
   private child(record: ChildRecord): Child {
@@ -178,10 +191,11 @@ export class Manager {
     this.capacity();
     const id = randomUUID();
     const name = this.uniqueName(input.name, input.agent);
-    mkdirSync(join(this.options.directory, id), { mode: 0o700 });
+    const directory = this.childrenDirectory();
+    mkdirSync(join(directory, id), { recursive: true, mode: 0o700 });
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
-      sessionPath: join(this.options.directory, id, "session.jsonl"), sessionLeafId: null, model: input.model, thinking: input.thinking,
+      sessionPath: join(directory, id, "session.jsonl"), sessionLeafId: null, model: input.model, thinking: input.thinking,
       run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 } });
     this.children.set(id, child);
     this.acquire(child);
@@ -347,7 +361,7 @@ export class Manager {
   private async open(child: Child, selection = { model: child.record.model, thinking: child.record.thinking }): Promise<void> {
     const record = child.record;
     if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
-    if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}`);
+    if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}. If this child predates the storage migration, run npm run migrate:sidekick-sessions.`);
     this.acquire(child);
     const leafId = record.sessionLeafId;
     const args = [...this.options.invocation.args, "--mode", "rpc", "--session", record.sessionPath,
