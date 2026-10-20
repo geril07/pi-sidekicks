@@ -30,7 +30,7 @@ The parent gets one `subagent` tool; delegation follows the parent's instruction
 |---|---|---|
 | `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. Batch: tasks take the same optional fields; optional `results`, `shared`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. Optional `model` (with `:thinking`) changes a finished child's saved selection before continuing. |
-| `answer` | `child`, `questionId`, `answer` | Resumes a blocking question, or delivers a nonblocking reply without restarting idle work. |
+| `answer` | `child`, `questionId`, `answer` | Resumes a blocking question. A nonblocking reply reaches a running child without a new turn; after the run finishes, the reply starts a new run, like `send`. |
 | `stop` | `child` | Cancels work and closes the process; retains the transcript. The tool result is the outcome; no separate message follows. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
@@ -38,9 +38,10 @@ Children are addressed by `name` (unique; defaults to the agent name, then `name
 Tool results and delivered messages are short plain text, not JSON.
 
 Questions and final results arrive automatically. Progress updates do not wake the
-parent model. Up to 64 assignments can be active, including startup and blocking questions;
-completed children can remain idle for follow-up. Unavailable selections fail rather
-than silently fall back.
+parent model. Up to 64 assignments can be active, including startup and blocking questions.
+Completed, failed, and interrupted children release their process after delivery;
+`send` reopens the saved conversation. Unavailable selections fail rather than
+silently fall back.
 
 To continue a completed, failed, stopped, or interrupted child on another model:
 
@@ -62,12 +63,12 @@ Children use `ask_parent({ question, wait })`. Omitted `wait` defaults to `true`
 (an implementation default, not a user requirement): the child pauses and the
 parent is notified after settlement. `wait: false` notifies immediately and lets
 work continue, including sibling tools and multiple outstanding questions.
-Replies are correlated by question ID and enter that same conversation at a safe
-boundary. A late nonblocking answer is retained without reopening the completed
-assignment or spending a model turn; use `send` explicitly if more work is needed.
-Nonblocking questions do not prevent ordinary guidance or follow-up. Stop, failure,
-process loss, and parent detach cancel unanswered questions; stale/duplicate replies fail.
-An idle child retains unanswered nonblocking questions across ordinary follow-ups.
+Replies are correlated by question ID. While the child is running, a nonblocking
+reply enters that conversation at a safe boundary without a new turn. After the
+run finishes, an answer starts a new run with `Answer to <id>:`; use `send` only to
+continue without answering. A planned close keeps unanswered nonblocking questions;
+stop, failure, unexpected process loss, and parent detach cancel them. Stale or
+duplicate replies fail.
 
 ### Batch launch
 
@@ -223,8 +224,9 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
   The child's system prompt gets the agent body plus one line saying that its final
   message is the result; it is passed inline, not as a file.
 - The fixed ceiling is 64 active assignments; excess work is rejected, not queued.
-  Idle processes remain alive and do not consume assignment slots. Each child is a
-  full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
+  Completed, failed, and interrupted runs release their process and lock after
+  delivery; a blocking question keeps its process while it waits. Each running child
+  is a full Pi process with ambient extensions/MCP; 64-way resource use is not validated.
 - Quit, reload, new/resume/fork, and actual tree navigation detach the old runtime
   and stop only its owned children. Cancelled/no-op tree navigation leaves them alone.
   Each saved child state includes a conversation checkpoint: after tree navigation,

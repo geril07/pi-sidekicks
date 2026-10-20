@@ -28,7 +28,7 @@ interface Child {
   record: ChildRecord; rpc?: RpcConnection; release?: () => void; closing?: Promise<void>;
   stopRequested: boolean; operation: boolean; settling: boolean; activity: string;
   controller: AbortController; lastError?: string; lastAborted?: boolean; lockContents?: string;
-  seenQuestions: Set<string>; contextRequest: number; restoredRequest?: string;
+  seenQuestions: Set<string>; contextRequest: number; restoredRequest?: string; closedByUs: boolean;
 }
 export interface ManagerOptions {
   ownerSessionId: string; parentSessionFile: () => string | null | undefined; cwd: string; trusted: boolean;
@@ -127,7 +127,7 @@ export class Manager {
   }
 
   private child(record: ChildRecord): Child {
-    return { record, stopRequested: false, operation: false, settling: false,
+    return { record, stopRequested: false, operation: false, settling: false, closedByUs: false,
       activity: "detached", controller: new AbortController(), seenQuestions: new Set(), contextRequest: 0 };
   }
 
@@ -143,7 +143,8 @@ export class Manager {
     const record = child.record;
     if (active(record.run.state)) record.run = { ...record.run, state: "interrupted", endedAt: Date.now(),
       question: undefined, result: DETACHED, delivered: true };
-    record.questions = [];
+    // A planned close keeps unanswered nonblocking questions for a later answer; losing the process does not.
+    if (!child.closedByUs) record.questions = [];
   }
 
   private view(child: Child): ChildSnapshot {
@@ -177,7 +178,7 @@ export class Manager {
   }
   private capacity(count = 1): void {
     this.assertAlive();
-    if ([...this.children.values()].filter((child) => child.closing || (child.release && active(child.record.run.state))).length + count > MAX_ACTIVE_ASSIGNMENTS) {
+    if ([...this.children.values()].filter((child) => child.release && active(child.record.run.state)).length + count > MAX_ACTIVE_ASSIGNMENTS) {
       throw new Error(`At most ${MAX_ACTIVE_ASSIGNMENTS} assignments may be active, including waiting questions. Stop or finish work before adding this assignment or batch.`);
     }
   }
@@ -208,6 +209,8 @@ export class Manager {
 
   async send(id: string, message: string, signal?: AbortSignal, model?: string): Promise<ChildSnapshot> {
     const child = this.find(id);
+    // A follow-up often arrives just as the finished process is closing; wait, then reopen.
+    if (child.closing) await child.closing;
     if (model !== undefined && active(child.record.run.state)) throw new Error("Model changes require a finished child. Stop it or wait for completion first.");
     if (child.record.run.state === "waiting" || child.record.run.question) throw new Error("Answer the pending question by questionId, or stop the child.");
     if (child.operation || child.settling || child.closing) throw new Error("Child is changing state; retry after it settles.");
@@ -283,6 +286,17 @@ export class Manager {
     const run = child.record.run;
     const question = child.record.questions?.find((q) => q.id === questionId);
     if (question) {
+      // A nonblocking answer to a finished run is new work: revive it like send, not a note nobody reads.
+      if (run.state === "completed") {
+        if (child.closing) await child.closing;
+        if (child.stopRequested || !child.record.questions?.some((q) => q.id === questionId)) {
+          throw new Error("No matching settled question: answer is stale, duplicate, or not ready.");
+        }
+        const snapshot = await this.send(child.record.id, frame(`Answer to ${questionId}`, answer), signal);
+        child.record.questions = child.record.questions?.filter((q) => q.id !== questionId);
+        this.commit(child);
+        return snapshot;
+      }
       if (child.operation || child.closing || !child.rpc || child.stopRequested) throw new Error("Child is changing state; retry after it settles.");
       child.operation = true;
       try {
@@ -359,6 +373,7 @@ export class Manager {
   }
 
   private async open(child: Child, selection = { model: child.record.model, thinking: child.record.thinking }): Promise<void> {
+    child.closedByUs = false;
     const record = child.record;
     if (!existsSync(record.cwd)) throw new Error(`Working directory no longer exists: ${record.cwd}`);
     if (!existsSync(dirname(record.sessionPath))) throw new Error(`Child session folder no longer exists: ${dirname(record.sessionPath)}. If this child predates the storage migration, run npm run migrate:sidekick-sessions.`);
@@ -383,7 +398,7 @@ export class Manager {
     rpc.on("fault", (error: Error) => { child.lastError = error.message; });
     rpc.on("exit", () => {
       child.controller.abort();
-      record.questions = [];
+      if (!child.closedByUs) record.questions = [];
       this.commit(child);
       if (this.alive && active(record.run.state) && !child.operation) {
         this.finish(child, child.stopRequested ? "cancelled" : "interrupted", child.lastError ?? "Child process exited before completion.");
@@ -512,7 +527,10 @@ export class Manager {
       child.settling = true;
       void this.settle(child, event.aborted).catch((error) => {
         child.settling = false;
-        if (this.alive) this.finish(child, child.stopRequested ? "cancelled" : "interrupted", errorText(error));
+        if (this.alive) {
+          this.finish(child, child.stopRequested ? "cancelled" : "interrupted", errorText(error));
+          void this.closeIfIdle(child);
+        }
       });
     }
   }
@@ -541,6 +559,7 @@ export class Manager {
     else if (child.lastError) this.finish(child, "failed", child.lastError);
     else if (aborted || child.lastAborted) this.finish(child, "interrupted", "Child aborted without a parent stop or question.");
     else this.finish(child, "completed", result.text ?? "(No assistant text)");
+    await this.closeIfIdle(child);
   }
 
   private finish(child: Child, state: RunState, result: string, deliver = true): void {
@@ -642,7 +661,15 @@ export class Manager {
     return this.view(child);
   }
 
+  /** Close a finished child's process, but never a run that started while it was settling. */
+  private async closeIfIdle(child: Child): Promise<void> {
+    if (!this.alive || child.operation || child.settling || child.closing) return;
+    if (active(child.record.run.state)) return;
+    try { await this.disconnect(child); } catch { /* the exit handler retries cleanup */ }
+  }
+
   private disconnect(child: Child): Promise<void> {
+    child.closedByUs = true;
     if (child.closing) return child.closing;
     const rpc = child.rpc;
     return child.closing = (async () => {

@@ -6,6 +6,17 @@ import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
 import { deliveryText, describeChild } from "../src/present.ts";
 
+async function waitForMissing(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try { await stat(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`File still exists: ${path}`);
+}
+
 async function harness(mode = "hold") {
   const directory = await mkdtemp("/tmp/opencode/sidekicks-manager-");
   const records = new Map<string, ChildRecord>();
@@ -133,24 +144,31 @@ test("launch allows more than three assignments, and stop retains the session id
   assert.equal(next.run.state, "running");
 });
 
-test("64 reservations including a waiting assignment fill capacity; cancelled and idle assignments do not", async (t) => {
+test("the active ceiling counts waiting work; aborted and idle assignments do not consume slots", async (t) => {
   const h = await harness("question");
   t.after(() => h.manager.shutdown());
   const child = await h.launch();
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "waiting");
-  const reserveRemaining = () => Array.from({ length: MAX_ACTIVE_ASSIGNMENTS - 1 }, () => assert.rejects(h.manager.launch({
+  const aborted = (count = 1) => Array.from({ length: count }, () => assert.rejects(h.manager.launch({
     agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
   }, AbortSignal.abort()), /abort/i));
-  const reservations = reserveRemaining();
-  await assert.rejects(h.launch("overflow"), /64 assignments/);
-  await Promise.all(reservations);
+
+  // One waiting child plus a 64-task batch exceeds the ceiling before anything is spawned.
+  await assert.rejects(h.manager.launchBatch(Array.from({ length: MAX_ACTIVE_ASSIGNMENTS }, () => ({
+    agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
+  })), "each", AbortSignal.abort()), /64 assignments/);
+
+  // Aborted launches settle as failed and must not reserve the remaining slots.
+  await Promise.all(aborted(MAX_ACTIVE_ASSIGNMENTS - 1));
+  await Promise.all(aborted());
+
   await h.manager.answer(child.id, "question-1", "Choose A");
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
-  const next = reserveRemaining();
-  const extra = assert.rejects(h.manager.launch({ agent: "worker", instructions: "Work", task: "Work",
-    model: "local/scripted", thinking: "off" }, AbortSignal.abort()), /abort/i);
-  await assert.rejects(h.launch("overflow"), /64 assignments/);
-  await Promise.all([...next, extra]);
+  await h.waitFor(() => h.manager.snapshot()[0].connected === false);
+
+  // The completed child is closed and idle; it must not consume a slot either.
+  await Promise.all(aborted(MAX_ACTIVE_ASSIGNMENTS - 1));
+  await Promise.all(aborted());
 });
 
 test("question delivery is deduplicated; only a matching answer continues the same run", async (t) => {
@@ -219,6 +237,45 @@ test("a completed run writes its full result as plain text in the child's folder
   assert.equal(second.run.resultFile, join(folder, "result-2.md"));
   assert.equal(await readFile(file, "utf8"), text, "the earlier run's file stays as written");
   assert.equal(second.run.endedAt !== undefined && second.run.endedAt >= second.run.startedAt!, true);
+});
+
+test("a completed child closes its process after delivery, and send reopens it", async (t) => {
+  const h = await harness("complete");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.waitFor(() => h.manager.snapshot()[0].connected === false);
+  assert.equal(h.manager.snapshot()[0].run.state, "completed");
+  await waitForMissing(`${child.sessionPath}.lock`);
+  const resumed = await h.manager.send(child.id, "Continue");
+  assert.equal(resumed.connected, true);
+  assert.equal(resumed.run.number, 2);
+  await h.waitFor(() => h.deliveries.length === 2);
+  await h.waitFor(() => h.manager.snapshot()[0].connected === false);
+  assert.equal(h.manager.snapshot()[0].run.state, "completed");
+  await waitForMissing(`${child.sessionPath}.lock`);
+  const messages = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line).message);
+  assert.deepEqual(messages, ["Task:\nWork", "Follow-up:\nContinue"]);
+});
+
+test("a failed child closes its process", async (t) => {
+  const h = await harness("failure");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.waitFor(() => h.manager.snapshot()[0].connected === false);
+  assert.equal(h.manager.snapshot()[0].run.state, "failed");
+  await waitForMissing(`${child.sessionPath}.lock`);
+});
+
+test("an aborted child closes its process", async (t) => {
+  const h = await harness("unexplained-abort");
+  t.after(() => h.manager.shutdown());
+  const child = await h.launch();
+  await h.waitFor(() => h.deliveries.length === 1);
+  await h.waitFor(() => h.manager.snapshot()[0].connected === false);
+  assert.equal(h.manager.snapshot()[0].run.state, "interrupted");
+  await waitForMissing(`${child.sessionPath}.lock`);
 });
 
 test("each run's prompt is saved exactly as the child received it, labelled so a leading slash stays text", async (t) => {
@@ -479,7 +536,7 @@ test(`a configuration failure restores the prior selection or disconnects withou
   assert.equal(current.run.id, child.run.id);
   assert.equal(current.model, "local/scripted");
   assert.equal(current.thinking, "off");
-  assert.equal(current.connected, scenario !== "switch-rollback");
+  assert.equal(current.connected, false);
   await h.manager.send(child.id, "Continue unchanged");
   await h.waitFor(() => h.deliveries.length === 2);
   const prompts = (await readFile(join(h.directory, "prompts.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));

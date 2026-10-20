@@ -32,6 +32,8 @@ fork remains a plausible bootstrap if its lifecycle fits the chosen contract.
 This makes completion different from destruction. Cancelling a run should retain
 the conversation. An idle child can accept another run. A dead process may later
 open its saved session without pretending to resume an arbitrary shell command.
+Keeping the conversation is independent of keeping the process: terminal runs
+close it after delivery and `send` reopens the saved session.
 
 Separate task handoff from project context: ordinary AGENTS.md/skills discovery is
 not a copy of the parent's conversation.
@@ -74,7 +76,8 @@ A separate viewer can be added later without changing run semantics.
 ## Open decisions before implementation
 
 - Child lifetime on parent quit, reload, /new, /resume, and unexpected parent death.
-- Whether settled child processes stay idle or are reopened from session files.
+- Resolved 2026-10-20: settled child processes close after delivery and reopen from
+  session files on `send`; `waiting` questions keep their process.
 - What ordinary stop means versus interrupt; neither should erase a transcript.
 - How pending questions are cancelled, answered, or reported on shutdown.
 - Delivery identity/receipts and duplicate handling across reload or restart.

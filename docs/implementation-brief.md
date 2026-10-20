@@ -23,10 +23,12 @@ observational runtime. Child-local question reservations only protect execution.
 | Question | Separate ID tied to its originating run; pending until answered, withdrawn, or cancelled. One blocking barrier per run; multiple nonblocking questions per conversation. |
 
 Up to 64 assignments may be active, including startup and blocking questions. Reject
-excess work rather than queue launches. Completed children remain idle; idle
-processes do not consume assignment slots. No automatic eviction policy is added.
-This is a fixed implementation ceiling following the user's correction, not a
-claim that 64 full Pi processes have been validated. Typical usage is not a limit.
+excess work rather than queue launches. Completed, failed, and interrupted runs
+release their process and lock after delivery; a waiting blocking question keeps
+its process. `send` reopens a saved conversation on demand. No timer or eviction
+policy is added. This is a fixed implementation ceiling following the user's
+correction, not a claim that 64 full Pi processes have been validated. Typical
+usage is not a limit.
 
 ### Startup and continuation
 
@@ -66,12 +68,14 @@ claim that 64 full Pi processes have been validated. Typical usage is not a limi
    return directly; uncertainty after submission is interruption, not proof of failure.
 
 `send` steers running work or starts a new run in the same conversation. A blocking
-answer continues the waiting run. Nonblocking answers use the child-only internal
-`/sidekicks-answer` command and Pi's public `sendMessage` with `triggerTurn: false`
-and `deliverAs: "steer"`: append at a safe boundary while running, or immediately
-while idle, without a new model turn. Framed answer text is message content, not
-an executable command. A stopped/detached child reopens its saved session and
-reapplies its saved agent/model configuration.
+answer continues the waiting run. While the child is running, nonblocking answers
+use the child-only internal `/sidekicks-answer` command and Pi's public
+`sendMessage` with `triggerTurn: false` and `deliverAs: "steer"`: append at a safe
+boundary without a new model turn. A nonblocking answer to a completed run starts
+a new run through the same path as `send`, with `Answer to <id>:` as framed
+content. A planned close keeps unanswered questions; failure, stop, unexpected
+process loss, and parent detach cancel them. A stopped/detached child reopens its
+saved session and reapplies its saved agent/model configuration.
 
 `send.model` optionally selects a new model for a finished child's next run, using
 launch's `model:thinking` parsing. Without a suffix, retain the child's thinking;
@@ -147,9 +151,10 @@ deduplicate question events and terminal outcomes. Progress only updates the wid
 Bound stored/delivered result text and point to the saved transcript for the rest.
 Nonblocking question notifications are immediate, without waiting for settlement;
 their IDs and originating run IDs remain in child metadata across completion and
-ordinary follow-ups. Replies do not reopen terminal runs. Explicit follow-up is
-needed to act on an idle reply. Failure, stop, process loss, and parent detach cancel
-unanswered questions. Duplicate/stale answers fail; completed outcomes stay unchanged.
+ordinary follow-ups. A reply to a running child does not start a new turn; a reply
+to a completed run starts a new run. A planned process close keeps unanswered
+questions; failure, stop, unexpected process loss, and parent detach cancel them.
+Duplicate/stale answers fail; completed outcomes stay unchanged.
 
 Batch launch uses the same tool/action with nonempty `tasks` and optional `results`
 (`together` by default, or `each`). Optional `shared` (tasks only) prepends common

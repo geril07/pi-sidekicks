@@ -257,7 +257,7 @@ test("real send tool switches provider/model/thinking after quota failure and re
 });
 
 for (const stopEarly of [false, true]) {
-test(`nonblocking questions notify during work, accept correlated active/idle replies, and cancel on stop (early: ${stopEarly})`, { timeout: 30_000 }, async (t) => {
+test(`nonblocking questions notify during work, accept active and late replies, and cancel on stop (early: ${stopEarly})`, { timeout: 30_000 }, async (t) => {
   const h = await isolated("nonblocking");
   const gate = join(h.dir, "release-effect");
   const deliveries: { child: ChildSnapshot; kind: string; questionId?: string }[] = [];
@@ -307,14 +307,19 @@ test(`nonblocking questions notify during work, accept correlated active/idle re
   const afterActive = await calls();
   assert.match(afterActive.at(-1).transcript, /active answer: A/);
   assert.match(afterActive.at(-1).transcript, new RegExp(questions[0].id));
+  // Auto-close released the finished process; a late answer is new work, so it revives the conversation.
+  await waitFor(() => manager.snapshot()[0].connected === false);
+  assert.equal(manager.snapshot()[0].questions!.length, 2);
   await manager.answer(child.id, questions[1].id, "late answer: B");
-  assert.deepEqual(manager.snapshot()[0].run, result, "late replies must not reopen or change the completed assignment");
-  assert.equal((await calls()).filter((r) => r.call).length, afterActive.filter((r) => r.call).length);
-  assert.match(await readFile(child.sessionPath, "utf8"), /late answer: B/);
-  await manager.send(child.id, "Use the retained late answer");
+  await assert.rejects(manager.answer(child.id, questions[1].id, "duplicate"), /stale/);
+  assert.equal(manager.snapshot()[0].questions!.length, 1);
   await waitFor(() => deliveries.filter((d) => d.kind === "result").length === 2);
+  const late = manager.snapshot()[0].run;
+  assert.equal(late.state, "completed");
+  assert.notEqual(late.id, result.id);
+  assert.equal(late.number, 2);
   assert.match((await calls()).at(-1).transcript, /late answer: B/);
-  assert.notEqual(manager.snapshot()[0].run.id, result.id);
+  assert.match(await readFile(child.sessionPath, "utf8"), /late answer: B/);
   await manager.stop(child.id);
   assert.equal(manager.snapshot()[0].questions!.length, 0);
   await assert.rejects(manager.answer(child.id, questions[2].id, "after stop"), /stale/);
