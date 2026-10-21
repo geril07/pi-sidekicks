@@ -9,6 +9,11 @@ call to action), F2 (`<sidekick>` block), F5 with a reworded no-poll text, F6, F
 sentence (F8) was removed. Skipped: F13 (role bodies in dotfiles). Backlog: F3 (needs a paid Gemini run), F4.
 F7, F9–F12 and the section 6 documentation proposals: no change. The text below is the original audit.
 
+**Historical note (2026-10-20).** Batch-launch schema findings and the model-only parent
+tool path in this audit were later superseded by the notification-groups design. The
+original text is kept as audit history; current requirements and implementation are in
+[scope](scope.md) and [notification-groups-design](notification-groups-design.md).
+
 **Agent-facing** means any text or schema a model reads or any call a model makes: the parent's
 `subagent` tool, the child's `ask_parent` tool, the child's briefing, labels on parent text, the
 messages that carry results and questions back, error strings, and the agent definition files.

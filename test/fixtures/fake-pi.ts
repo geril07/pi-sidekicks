@@ -27,7 +27,7 @@ input.on("line", (line) => {
     case "get_available_models": {
       if (mode === "invalid") { process.stdout.write("not JSON\n"); return; }
       const respond = () => response({ models: process.env.SIDEKICKS_FAKE_MODELS ? JSON.parse(process.env.SIDEKICKS_FAKE_MODELS) : mode.startsWith("switch") ? ["scripted", "next", "plain"].map((id) => ({ provider: "local", id })) : mode === "catalog" ? [{ provider: "openai", id: "luna" }, { provider: "codex", id: "luna" }, { provider: "gateway", id: "openai/luna" }] : [model] });
-      if (mode === "slow") setTimeout(respond, 100);
+      if (mode === "slow" || mode === "startup-race") setTimeout(respond, 100);
       else respond();
       break;
     }
@@ -64,7 +64,7 @@ input.on("line", (line) => {
       break;
     }
     case "get_last_assistant_text": {
-      if (mode === "settling-race") setTimeout(() => response({ text: "done" }), 2000);
+      if (mode === "settling-race" || mode === "settling-race-group") setTimeout(() => response({ text: "done" }), 2000);
       else response({ text: mode === "long-result" ? "x".repeat(30_000) : "done" });
       break;
     }
@@ -82,7 +82,8 @@ input.on("line", (line) => {
       prompts++;
       isStreaming = true;
       if (process.env.SIDEKICKS_FAKE_LOG) appendFileSync(process.env.SIDEKICKS_FAKE_LOG, `${JSON.stringify({ ...command, model, thinkingLevel, cwd: process.cwd(), subagentChild: process.env.PI_SUBAGENT_CHILD, subagentAgent: process.env.PI_SUBAGENT_CHILD_AGENT })}\n`);
-      response({ disposition: "started" });
+      // Hold the acceptance response so a test can cancel after the prompt was submitted, while the run is active.
+      if (!(mode === "startup-prompt-pending" && command.message.includes("PENDING_PROMPT"))) response({ disposition: "started" });
       if (mode === "metrics" || mode === "metrics-unavailable") setImmediate(() => {
         for (const toolCallId of ["outer", "outer/1"]) {
           emit({ type: "tool_execution_start", toolCallId, toolName: "read", args: {} });
@@ -107,7 +108,9 @@ input.on("line", (line) => {
           complete();
         }, 200);
       });
-      if ((mode.startsWith("switch") && !(mode === "switch-failure" && prompts === 1)) || mode === "complete" || mode === "long-result" || mode === "settling-race" || (mode === "batch" && command.message.includes("outcome=complete"))) setImmediate(complete);
+      if ((mode.startsWith("switch") && !(mode === "switch-failure" && prompts === 1)) || mode === "complete" || mode === "long-result" || mode === "settling-race"
+        || (mode === "settling-race-group" && !command.message.includes("outcome=hold"))
+        || ((mode === "batch" || mode === "startup-race") && command.message.includes("outcome=complete"))) setImmediate(complete);
       if (mode === "exit" || (mode === "batch" && command.message.includes("outcome=exit"))) setImmediate(() => process.exit(0));
       if (mode === "question" && prompts === 1) setImmediate(() => {
         const event = { type: "entry_appended", entry: { type: "custom", customType: "sidekicks:question",
@@ -117,6 +120,12 @@ input.on("line", (line) => {
         settled();
       });
       if (mode === "question" && prompts > 1) setImmediate(complete);
+      if (mode === "question-nonblocking" && prompts === 1 && !command.message.includes("outcome=hold")) setImmediate(() => {
+        emit({ type: "entry_appended", entry: { type: "custom", customType: "sidekicks:question",
+          data: { action: "asked", id: "question-1", text: "Which option?", wait: false } } });
+        complete();
+      });
+      if (mode === "question-nonblocking" && prompts > 1) setImmediate(complete);
       if (mode === "failure" || (mode === "switch-failure" && prompts === 1) || (mode === "batch" && command.message.includes("outcome=failure"))) setImmediate(() => {
         emit({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "scripted provider failed" } });
         settled();

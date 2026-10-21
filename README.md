@@ -24,18 +24,23 @@ The old extension is not hidden or disabled automatically.
 
 ## Use
 
-The parent gets one `subagent` tool; delegation follows the parent's instructions:
+The parent gets two tools, `subagent` and `notify_when_done`; delegation follows the
+parent's instructions. Both are `direct`, so codemode can call them as `tools.subagent`
+and `tools.notify_when_done` when enabled.
 
 | Action | Required fields | Behavior |
 |---|---|---|
-| `launch` | `agent`, `task`, or `tasks` | Returns after child readiness, not task completion. Single launch: optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. Batch: tasks take the same optional fields; optional `results`, `shared`. |
+| `launch` | `agent`, `task` | Returns after child readiness, not task completion. Optional `name`, `model` (a trailing `:thinking`, as in `openai/gpt-6-luna:xhigh`, sets thinking), `thinking`, `cwd`. |
 | `send` | `child`, `message` | Steers running work or starts another assignment in the same conversation. Optional `model` (with `:thinking`) changes a finished child's saved selection before continuing. |
 | `answer` | `child`, `questionId`, `answer` | Resumes a blocking question. A nonblocking reply reaches a running child without a new turn; after the run finishes, the reply starts a new run, like `send`. |
-| `stop` | `child` | Cancels work and closes the process; retains the transcript. The tool result is the outcome; no separate message follows. |
+| `stop` | `child` | Cancels active work and closes the process, retaining the transcript. It does not discard a completed result held for grouped notification. The tool result is the outcome; no separate message follows. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
-Children are addressed by `name` (unique; defaults to the agent name, then `name-2`, ...).
-Tool results and delivered messages are short plain text, not JSON.
+`notify_when_done` takes `children`: 1 to 64 child names or IDs. It registers the
+selected current assignments as one future-success notification group and returns
+immediately. It does not wait, launch children, or recover an early result.
+Children are addressed by `name` or stable ID; a name defaults to the agent name,
+then `name-2`, .... Tool results and delivered messages are short plain text, not JSON.
 
 Questions and final results arrive automatically. Progress updates do not wake the
 parent model. Up to 64 assignments can be active, including startup and blocking questions.
@@ -70,30 +75,48 @@ continue without answering. A planned close keeps unanswered nonblocking questio
 stop, failure, unexpected process loss, and parent detach cancel them. Stale or
 duplicate replies fail.
 
-### Batch launch
+### Notification groups
 
-Use `subagent` with `action: "launch"` and a nonempty `tasks` array:
+Launch children separately, then register the started ones:
 
-```json
-{"action":"launch","tasks":[{"agent":"worker","task":"Review src/manager.ts","name":"runtime"},{"agent":"worker","task":"Review tests","name":"tests"}],"results":"together"}
+```js
+const tasks = [
+  { agent: "reviewer", name: "review", task: "Review the change and report findings." },
+  { agent: "worker", name: "tests", task: "Run the requested checks and report evidence." }
+];
+const outcomes = await Promise.allSettled(tasks.map(task =>
+  tools.subagent({ action: "launch", ...task })
+));
+for (let i = 0; i < outcomes.length; i++) {
+  const outcome = outcomes[i];
+  text({ child: tasks[i].name, startup: outcome.status,
+    result: outcome.status === "fulfilled" ? outcome.value : String(outcome.reason) });
+}
+const started = tasks.filter((_, i) => outcomes[i].status === "fulfilled");
+if (started.length) text(await tools.notify_when_done({ children: started.map(task => task.name) }));
 ```
 
-Each task accepts `agent`, `task`, and optional `name`, `model`, `thinking`.
-Optional `shared` text is prepended to each entry's own `task` with a blank line; whitespace-only `shared` is ignored, and each own task must still be nonblank.
-Do not mix `tasks` with those top-level fields. `results` is valid only with
-`tasks`: `together` (default) holds completed results until every member settles;
-`each` delivers each result separately. Agent/default resolution, names, and capacity
-are checked for the whole batch before any child starts. Members then start
-concurrently; startup failures appear per member in the tool result and are excluded
-from the group.
+A launch or notify call returns without waiting for task completion. A fulfilled launch
+means startup only; when one launch fails, its siblings are not rolled back. Register
+after launches finish starting. An assignment that already finished before registration
+is not added and cannot be replayed. Already-queued notifications stay queued; registration
+cannot retract them or turn a nonblocking question into a grouped result.
 
-With `together`, failures, interruptions, and questions arrive immediately; siblings
-keep running. Waiting for an answer still counts as active. Stopping a grouped member
-sends no cancellation message. When all settle, one group message contains all held
-results in full and short status lines for the other members. With no held result,
-there is no group message. Sending new work to a member releases its held result
-individually first, and the new run leaves the group. Reload releases held results
-once after restoring the group; it does not rerun work or replay other notifications.
+After registration, successful results are held until every remaining member finishes,
+fails, is interrupted, or is stopped. Questions, failures, and interruptions still
+arrive immediately. An exact repeat registration is a no-op after terminal omissions;
+a subset or a different overlap with an open group is rejected rather than merged.
+When no held success exists, the group closes without an extra wake-up.
+
+One combined message contains all held results in full and short outcome rows for the
+other remaining members. A follow-up or late nonblocking answer to a held member
+releases that result individually, removes the old assignment from the group, and
+starts an ungrouped run. A rejected follow-up leaves the result and membership intact.
+Reload/resume releases held results once after restoring the group; it does not rerun
+work or replay other notifications. A second window that observed another writer
+quarantines that whole group for its runtime, even after the locks disappear: it does
+not redeliver the stale held copy, but an explicit follow-up may still continue the
+released child. A later temporary lock only defers the originating window's delivery.
 Follow-ups after interruption or stop tell the child to check for partial changes
 before repeating work.
 
@@ -117,13 +140,17 @@ and remains available for follow-up. Questions and results arrive as transcript 
   any other key does too and still reaches the editor.
 - Clicking the summary expands/collapses it, and clicking a row toggles its details
   (fullscreen mode only). `/sidekicks` enters the list without a keystroke.
-- Results, questions, and batches appear in the transcript as collapsible `[sidekick]` blocks;
-  batch previews are bounded per member; expansion shows each full result as Markdown.
-  Tool calls render as `subagent <action> <target>`, with no prompt text. Under launch, send,
+- Results, questions, and combined notification messages appear in the transcript as
+  collapsible `[sidekick]` blocks; previews are bounded per member, and expansion shows
+  each full result as Markdown. Saved historical batch messages keep their old view.
+  Tool calls render as `subagent <action> <target>` or
+  `notify_when_done <handles>`, with no prompt text. Under launch, send,
   and answer rows, a line shows `name agent model` (no state or time, which would go stale; a
   final state such as `stopped` is shown) and then the prompt you wrote: three wrapped rows
   collapsed, full Markdown when expanded (click the row in fullscreen mode, or the Pi expand key).
-  A batch lists its members, each with its own prompt when expanded. `status` rows keep state and time.
+  A saved historical batch lists its members, each with its own prompt when expanded;
+  a new grouped notification lists the held results and short outcome rows. `status`
+  rows keep state and time.
 
 These actions do not spend a model turn. Down is only claimed when the main editor
 is focused and empty, so drafts, pastes, and dialogs keep their keys.
@@ -238,6 +265,9 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
   owner releases a child, explicit `send` may continue from this window's checkpoint.
   This is not live synchronization. New session IDs from clone/fork do not adopt
   children; `pi --fork <path|id>` in another window leaves the original work running.
+  A construction-time quarantined notification group is never redelivered by that
+  second window; `status` uses the long quarantine sentence and the widget shows
+  `notification in another window`.
 - Checkpoints are small custom Pi entries; session format and directory layout stay
   unchanged. Old registry snapshots without child checkpoints are not restored or
   migrated. Their transcripts and result files are left untouched.
@@ -254,8 +284,8 @@ See the [constraints audit](docs/scope.md#constraints-audit) for provenance.
   already submitted to Pi may remain in the owning parent's transcript/queue after
   reload; stale answers are rejected. Registry recovery requires a saved parent session.
 - Children work in the parent's directory unless launched with `cwd` (absolute, or relative
-  to the parent's; it must be an existing directory, and one bad entry rejects a whole
-  batch). A child outside the parent's directory shows `cwd <path>` in status and details. The
+  to the parent's; it must be an existing directory). A child outside the parent's
+  directory shows `cwd <path>` in status and details. The
   child keeps that directory when reopened. Agent definitions are still discovered from the
   parent's directory. There is no sandbox, tool-managed worktree isolation,
   daemon, nested-sidekicks runtime, transcript viewer, or durable tool replay.
@@ -287,10 +317,12 @@ npm run test:tui  # optional: requires tmux
 
 Tests use isolated agent directories under `/tmp/opencode`, real Pi RPC processes,
 scripted local providers, and a fake RPC peer. No billable model or external MCP
-call is needed. The terminal smoke uses its own named tmux server and checks both
+call is needed. The suite includes real-Pi codemode `on`/`only` checks for parent tool
+publication, raw unknown-key errors, nested launch/registration, grouped delivery,
+and reload. The terminal smoke uses its own named tmux server and checks both
 terminal modes, draft/cursor/paste preservation, unrelated dialogs, summary clicks,
-child-extension dialogs, and batch message expansion/click collapse. It saves text
-evidence under `/tmp/opencode`.
+child-extension dialogs, and combined notification message expansion/click collapse.
+It saves text evidence under `/tmp/opencode`.
 
 Before replacing the existing setup, obtain permission for a live provider/MCP
 smoke and test coexistence with the operator's actual extensions.

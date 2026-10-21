@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Agent } from "./agents.ts";
-import type { ChildSnapshot, Question, Run, RunState } from "./manager.ts";
+import { isRestoreInterruption, type ChildSnapshot, type Question, type Run, type RunState } from "./manager.ts";
 
 export type Style = Pick<Theme, "fg" | "bold">;
 export const plainStyle: Style = { fg: (_color, text) => text, bold: (text) => text };
@@ -57,7 +57,9 @@ const preview = (text: string, length: number) => {
 /** One line the model can scan: handle first, because it is the argument of every follow-up call. */
 export function describeChild(child: ChildSnapshot): string {
   const run = child.run;
-  const storage = `\n  id: ${child.id}\n  folder: ${dirname(child.sessionPath)}`;
+  const notification = !child.external && child.notificationExternal ? "; notification group was opened by another window; this window will not deliver it; reload after that window releases the children"
+    : !child.external && run.groupId && run.state === "completed" && !run.delivered ? "; completion result held for grouped notification" : "";
+  const storage = `${notification}\n  id: ${child.id}\n  folder: ${dirname(child.sessionPath)}`;
   if (child.external) return `${child.name} (${child.agent}, ${modelLabel(child)}) — managed by another window; saved status: ${STATES[run.state].word}${run.resultFile ? ` (result file: ${run.resultFile})` : ""}. send/answer/stop are unavailable while it owns the child.${storage}`;
   const detail = run.question ? `asks ${run.question.id}: ${preview(run.question.text, 160)}`
     : isActive(run.state) ? child.connected ? child.activity : "detached" : preview(run.result ?? "", 160);
@@ -81,17 +83,34 @@ export function statusText(children: ChildSnapshot[], agents: Agent[]): string {
   return lines.join("\n");
 }
 
-export function groupHeadline(members: { state: RunState }[]): string {
+export function groupHeadline(members: { state: RunState }[], combined = false): string {
   const counts = new Map<RunState, number>();
   for (const member of members) counts.set(member.state, (counts.get(member.state) ?? 0) + 1);
-  return [`batch of ${members.length}`, ...[...counts].map(([state, count]) => `${count} ${STATES[state].word}`)].join(" · ");
+  const count = members.length === 1 ? "1 assignment" : `${members.length} assignments`;
+  return [combined ? `Combined results for ${count}` : `batch of ${members.length}`, ...[...counts].map(([state, count]) => `${count} ${STATES[state].word}`)].join(" · ");
 }
 
-export function groupText(members: ChildSnapshot[]): string {
-  return [groupHeadline(members.map((child) => ({ state: child.run.state }))),
-    ...members.map((child) => child.run.state === "completed" && !child.run.delivered
-      ? deliveryText(child, "result")
-      : `Sidekick ${child.name} ${STATES[child.run.state].word}${child.run.state === "failed" || child.run.state === "interrupted" ? " (already reported)" : ""}.`)].join("\n\n");
+export type GroupDisposition = "held-result" | "reported" | "stopped" | "restore-interrupted";
+
+export function groupDisposition(child: ChildSnapshot): GroupDisposition {
+  if (child.run.state === "completed" && !child.run.delivered) return "held-result";
+  if (child.run.state === "cancelled") return "stopped";
+  return isRestoreInterruption(child.run) ? "restore-interrupted" : "reported";
+}
+
+export function groupMemberText(child: ChildSnapshot): string {
+  switch (groupDisposition(child)) {
+    case "held-result": return deliveryText(child, "result");
+    case "stopped": return `Sidekick ${child.name} stopped by parent.`;
+    case "restore-interrupted": return `Sidekick ${child.name} interrupted by session restore; no earlier notification was sent.`;
+    case "reported": return `Sidekick ${child.name} ${STATES[child.run.state].word} (already reported).`;
+  }
+}
+
+export function groupText(members: ChildSnapshot[], restored = false): string {
+  return [...(restored ? ["Combined results after session restore."] : []),
+    groupHeadline(members.map((child) => ({ state: child.run.state })), true),
+    ...members.map(groupMemberText)].join("\n\n");
 }
 
 const escapeAttribute = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

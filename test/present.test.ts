@@ -103,18 +103,31 @@ test("a finished run without a recorded end shows no elapsed time, so it cannot 
   assert.equal(elapsedOf({ id: "r", number: 1, state: "running", delivered: false, startedAt: started }), "1m30s");
 });
 
-test("group messages contain full held results and short previously reported outcomes", () => {
-  const completed = { ...child, run: { ...child.run, state: "completed" as const, result: "First full result\nsecond line" } };
-  const failed = { ...child, name: "bad", run: { ...child.run, state: "failed" as const, delivered: true, result: "Already delivered error details" } };
-  const stopped = { ...child, name: "stopped", run: { ...child.run, state: "cancelled" as const, delivered: true } };
-  const interrupted = { ...child, name: "cut", run: { ...child.run, state: "interrupted" as const, delivered: true } };
+test("combined messages contain full held results and short outcome rows", () => {
+  const completed = { ...child, run: { ...child.run, state: "completed" as const, groupId: "g", result: "First full result\nsecond line" } };
+  const failed = { ...child, name: "bad", run: { ...child.run, state: "failed" as const, groupId: "g", delivered: true, result: "Already delivered error details" } };
+  const stopped = { ...child, name: "stopped", run: { ...child.run, state: "cancelled" as const, groupId: "g", delivered: true } };
+  const interrupted = { ...child, name: "cut", run: { ...child.run, state: "interrupted" as const, groupId: "g", delivered: true } };
   const message = groupText([completed, failed, stopped, interrupted]);
-  assert.match(message, /batch of 4 · 1 completed · 1 failed · 1 stopped · 1 interrupted/);
+  assert.match(message, /^Combined results for 4 assignments · 1 completed · 1 failed · 1 stopped · 1 interrupted/);
   assert.match(message, /Sidekick cut interrupted \(already reported\)/);
   assert.match(message, /First full result\nsecond line/);
   assert.match(message, /Sidekick bad failed \(already reported\)/);
-  assert.match(message, /Sidekick stopped stopped/);
+  assert.match(message, /Sidekick stopped stopped by parent\./);
   assert.doesNotMatch(message, /Already delivered error details/);
+  assert.doesNotMatch(message, /batch of/);
+  assert.match(groupText([completed], true), /^Combined results after session restore\.\n\nCombined results for 1 assignment/);
+  assert.match(groupText([completed]), /^Combined results for 1 assignment · 1 completed/);
+});
+
+test("status suffixes distinguish a locally held result, quarantine, and an external child", () => {
+  const held = { ...child, run: { ...child.run, state: "completed" as const, groupId: "g", delivered: false, result: "Found it." } };
+  assert.match(describeChild(held), /; completion result held for grouped notification/);
+  const foreign = { ...held, notificationExternal: true };
+  assert.match(describeChild(foreign), /notification group was opened by another window; this window will not deliver it/);
+  assert.doesNotMatch(describeChild(foreign), /completion result held/);
+  assert.doesNotMatch(describeChild({ ...held, external: true }), /completion result held|notification group/, "a live foreign owner uses the ordinary external status");
+  assert.doesNotMatch(describeChild({ ...held, external: true, notificationExternal: true }), /notification group was opened/, "the external status already identifies the owner");
 });
 
 test("group renderer has one bounded, sanitized block and expanded Markdown for each member", (t) => {

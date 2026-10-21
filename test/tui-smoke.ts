@@ -39,7 +39,7 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   const noLocks = () => assert.equal([...globSync("parent/sidekicks/**/*.lock", { cwd: directory })].length, 0, "graceful shutdown releases child writer locks");
   const command = ["env", `PI_CODING_AGENT_DIR=${agent}`, `SIDEKICKS_TEST_LOG=${log}`,
     `SIDEKICKS_TEST_SCENARIO=${scenario}`,
-    ...(scenario === "batch-parent" ? [`SIDEKICKS_TEST_LAUNCH=${JSON.stringify({ tasks: [{ agent: "worker", task: "Work", name: "one" }, { agent: "worker", task: "Work", name: "two" }] })}`] : []),
+    ...(scenario === "group-parent" ? [`SIDEKICKS_TEST_GATE=${join(directory, "group-ready")}`] : []),
     "PI_PROGRAM_STATUS=0", process.execPath, cli,
     "--no-approve", "--session", join(directory, "parent.jsonl"), "-e", join(root, "src/index.ts"),
     "--model", "sidekicks-test/scripted"].map(quote).join(" ");
@@ -65,21 +65,21 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
       literal("edited");
       keys("Enter");
     }
-    if (scenario === "batch-parent") {
-      const collapsed = await waitFor((text) => text.includes("[sidekick] batch of 2 · 2 completed"), "group completion");
+    if (scenario === "group-parent") {
+      const collapsed = await waitFor((text) => text.includes("[sidekick] Combined results for 2 assignments · 2 completed"), "group completion");
       assert(!collapsed.includes("Evidence: local scripted provider."), "collapsed group previews are bounded");
       writeFileSync(join(directory, "group-collapsed.txt"), collapsed);
       keys("C-o");
       const expanded = await waitFor((text) => text.includes("Evidence: local scripted provider."), "expanded group results");
       writeFileSync(join(directory, "group-expanded.txt"), expanded);
-      const row = expanded.split("\n").findIndex((line) => line.includes("[sidekick] batch of 2")) + 1;
+      const row = expanded.split("\n").findIndex((line) => line.includes("[sidekick] Combined results for 2 assignments")) + 1;
       assert(row > 0);
       literal(`\x1b[<0;2;${row}M\x1b[<0;2;${row}m`);
       await waitFor((text) => !text.includes("Evidence: local scripted provider."), "group click collapses");
       shortcut("q");
-      await waitFor(paneDead, "batch session shutdown");
+      await waitFor(paneDead, "group session shutdown");
       noLocks();
-      console.log(`PASS ${mode} batch: ${directory}`);
+      console.log(`PASS ${mode} group: ${directory}`);
       return;
     }
     await waitFor((text) => text.includes("FINAL: child completion received automatically."), "automatic question/answer/completion");
@@ -171,4 +171,4 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
 
 for (const mode of ["fullscreen", "regular"] as const) await smoke(mode);
 await smoke("fullscreen", "dialogs");
-await smoke("fullscreen", "batch-parent");
+await smoke("fullscreen", "group-parent");

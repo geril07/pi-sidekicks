@@ -136,7 +136,11 @@ export class StatusWidget implements Component {
     const usage = child.contextUsage;
     const context = `${usage?.tokens == null ? "—" : compact(usage.tokens)}/${usage ? compact(usage.contextWindow) : "—"}`;
     const metrics = `${child.run.turns ?? "—"} turns · ${child.run.tools ?? "—"} tools · ctx ${context}`;
-    return rightAlign(` ${left}`, style.fg("dim", `${metrics}${elapsed ? `    ${elapsed}` : ""}`), width);
+    const measurement = style.fg("dim", `${metrics}${elapsed ? `    ${elapsed}` : ""}`);
+    const notification = !child.external && child.notificationExternal ? " · notification in another window"
+      : !child.external && child.run.groupId && child.run.state === "completed" && !child.run.delivered ? " · result held" : "";
+    const suffix = visibleWidth(left) + notification.length + visibleWidth(measurement) + 2 <= width ? notification : "";
+    return rightAlign(` ${left}${style.fg("muted", suffix)}`, measurement, width);
   }
 
   /** Where the child's transcript and result files live, for finding them from a shell. */

@@ -33,6 +33,26 @@ test("a foreign child's row and summary identify another window, not live progre
   assert.doesNotMatch(widget.render(160)[1], /detached|interrupted|1m0\ds/);
 });
 
+test("a held result and a quarantined group are marked only when they fit", () => {
+  const held = { ...child("held"), run: { ...child("held").run, state: "completed" as const, groupId: "g", endedAt: Date.now() } };
+  const widget = new StatusWidget(() => [held]);
+  widget.toggle();
+  assert.match(widget.render(160).join("\n"), /result held/);
+  assert.doesNotMatch(widget.render(60).join("\n"), /result held/, "the suffix drops before the metrics at narrow widths");
+  const foreign = { ...held, notificationExternal: true };
+  const quarantined = new StatusWidget(() => [foreign]);
+  quarantined.toggle();
+  assert.match(quarantined.render(160).join("\n"), /notification in another window/);
+  assert.doesNotMatch(quarantined.render(160).join("\n"), /result held/);
+  const external = new StatusWidget(() => [{ ...held, external: true }]);
+  external.toggle();
+  assert.doesNotMatch(external.render(160).join("\n"), /result held/);
+  assert.doesNotMatch(external.render(160).join("\n"), /notification in another window/, "the row already says another window");
+  const both = new StatusWidget(() => [{ ...held, external: true, notificationExternal: true }]);
+  both.toggle();
+  assert.doesNotMatch(both.render(160).join("\n"), /notification in another window/);
+});
+
 test("rows show name, agent, model, state and elapsed time; a failure keeps its reason; Enter shows only the storage folder", () => {
   const children = [child("one"), child("two"), child("three")];
   children[0].name = "名字".repeat(40) + "\x1b]52;bad\x07";

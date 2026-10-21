@@ -6,6 +6,14 @@ import test from "node:test";
 import { Manager, MAX_ACTIVE_ASSIGNMENTS, type ChildRecord, type ChildSnapshot, type ManagerOptions } from "../src/manager.ts";
 import { deliveryText, describeChild } from "../src/present.ts";
 
+async function waitForPrompt(path: string, text: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try { if ((await readFile(path, "utf8")).includes(text)) return; } catch { /* not written yet */ }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Prompt was not submitted: ${text}`);
+}
+
 async function waitForMissing(path: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
     try { await stat(path); } catch (error) {
@@ -22,6 +30,7 @@ async function harness(mode = "hold") {
   const records = new Map<string, ChildRecord>();
   const deliveries: { child: ChildSnapshot; kind: string }[] = [];
   const groups: ChildSnapshot[][] = [];
+  const groupRestored: boolean[] = [];
   const waiters = new Set<() => void>();
   const options: ManagerOptions = {
     ownerSessionId: "parent", parentSessionFile: () => join(directory, "parent.jsonl"), cwd: directory, trusted: false,
@@ -29,7 +38,7 @@ async function harness(mode = "hold") {
     env: { ...process.env, SIDEKICKS_FAKE_SCENARIO: mode, SIDEKICKS_FAKE_LOG: join(directory, "prompts.jsonl"), SIDEKICKS_DESCENDANT_PID: join(directory, "descendant.pid") },
     persist: (record) => { records.set(record.id, record); },
     deliver: (child, kind) => { deliveries.push({ child, kind }); for (const wake of waiters) wake(); },
-    deliverGroup: (members) => { groups.push(members); for (const wake of waiters) wake(); },
+    deliverGroup: (members, restored) => { groups.push(members); groupRestored.push(restored); for (const wake of waiters) wake(); },
     changed: () => { for (const wake of waiters) wake(); },
     dialog: async () => undefined,
   };
@@ -42,7 +51,7 @@ async function harness(mode = "hold") {
   });
   const launch = (name = "worker") => manager.launch({ agent: name, instructions: "Do the task", name,
     task: "Work", model: "local/scripted", thinking: "off" });
-  return { manager, options, directory, records, deliveries, groups, waitFor, launch };
+  return { manager, options, directory, records, deliveries, groups, groupRestored, waitFor, launch };
 }
 
 test("children live under the parent session's sidekicks directory, not a global store", async (t) => {
@@ -153,10 +162,7 @@ test("the active ceiling counts waiting work; aborted and idle assignments do no
     agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
   }, AbortSignal.abort()), /abort/i));
 
-  // One waiting child plus a 64-task batch exceeds the ceiling before anything is spawned.
-  await assert.rejects(h.manager.launchBatch(Array.from({ length: MAX_ACTIVE_ASSIGNMENTS }, () => ({
-    agent: "worker", instructions: "Work", task: "Work", model: "local/scripted", thinking: "off",
-  })), "each", AbortSignal.abort()), /64 assignments/);
+  assert.throws(() => h.manager.notifyWhenDone(Array(MAX_ACTIVE_ASSIGNMENTS + 1).fill(child.name)), /between 1 and 64/);
 
   // Aborted launches settle as failed and must not reserve the remaining slots.
   await Promise.all(aborted(MAX_ACTIVE_ASSIGNMENTS - 1));
@@ -413,13 +419,12 @@ test("checkpoint restore needs an acknowledgement, not just a handled slash comm
 test("a foreign held batch is not delivered or persisted by the second manager", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch(["complete", "hold"].map((outcome) => ({ agent: "w", name: outcome,
-    instructions: "Work", task: `outcome=${outcome}`, model: "local/scripted", thinking: "off" })));
+  await launchGrouped(h, [assignment("complete", "complete"), assignment("hold")]);
   await h.waitFor(() => h.manager.snapshot().some((child) => child.run.state === "completed"));
   const before = JSON.stringify([...h.records.values()]);
   const other = new Manager({ ...h.options, restored: [...h.records.values()] });
   t.after(() => other.shutdown());
-  assert(other.snapshot().every((child) => child.external));
+  assert(other.snapshot().every((child) => child.notificationExternal));
   other.releaseHeld();
   await other.shutdown();
   assert.equal(JSON.stringify([...h.records.values()]), before);
@@ -596,10 +601,7 @@ for (const cancel of ["stop", "abort", "shutdown"]) {
 test("changing a held batch member preserves the old result's model attribution", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch([
-    { agent: "worker", instructions: "", name: "done", task: "outcome=complete", model: "local/scripted", thinking: "off" },
-    { agent: "worker", instructions: "", name: "working", task: "Hold", model: "local/scripted", thinking: "off" },
-  ]);
+  await launchGrouped(h, [assignment("done", "complete"), assignment("working")]);
   await h.waitFor(() => h.manager.snapshot().find((child) => child.name === "done")!.run.state === "completed");
   await assert.rejects(h.manager.send("done", "Invalid", undefined, "missing/model"), /exactly one/);
   assert.equal(h.deliveries.length, 0);
@@ -670,15 +672,24 @@ test("children get unique handles and are addressable by name", async (t) => {
 const assignment = (name: string, outcome = "hold") => ({ agent: "worker", instructions: "Work", name,
   task: `outcome=${outcome}`, model: "local/scripted", thinking: "off" as const });
 
+async function launchGrouped(h: Awaited<ReturnType<typeof harness>>, inputs: Parameters<Manager["launch"]>[0][], grouped = true) {
+  await Promise.all(inputs.map((input) => h.manager.launch({ ...input, task: "outcome=hold" })));
+  if (grouped) h.manager.notifyWhenDone(inputs.map((input) => input.name!));
+  await Promise.all(inputs.filter((input) => /outcome=(complete|failure|exit)/.test(input.task)).map((input) => h.manager.send(input.name!, input.task)));
+}
+
 for (const results of ["together", "each"] as const) {
-  test(`batch ${results} delivers completed outcomes exactly once`, async (t) => {
+  test(`notification delivery ${results} delivers completed outcomes exactly once`, async (t) => {
     const h = await harness("batch");
     t.after(() => h.manager.shutdown());
-    await h.manager.launchBatch([assignment("one", "complete"), assignment("two", "complete")], results);
+    await launchGrouped(h, [assignment("one", "complete"), assignment("two", "complete")], results === "together");
     await h.waitFor(() => h.manager.snapshot().every((child) => child.run.delivered));
     assert.equal(h.deliveries.length, results === "each" ? 2 : 0);
     assert.equal(h.groups.length, results === "together" ? 1 : 0);
-    if (results === "together") assert.deepEqual(h.groups[0].map((child) => child.name).sort(), ["one", "two"]);
+    if (results === "together") {
+      assert.deepEqual(h.groups[0].map((child) => child.name).sort(), ["one", "two"]);
+      assert.deepEqual(h.groupRestored, [false]);
+    }
     h.manager.releaseHeld();
     assert.equal(h.groups.length, results === "together" ? 1 : 0);
   });
@@ -687,7 +698,7 @@ for (const results of ["together", "each"] as const) {
 test("a batch failure is immediate; siblings keep running and later share completed results", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch([assignment("bad", "failure"), assignment("slow"), assignment("done", "complete")]);
+  await launchGrouped(h, [assignment("bad", "failure"), assignment("slow"), assignment("done", "complete")]);
   await h.waitFor(() => h.deliveries.length === 1 && h.manager.snapshot().find((child) => child.name === "done")?.run.state === "completed");
   assert.equal(h.deliveries[0].child.run.state, "failed");
   assert.equal(h.manager.snapshot().find((child) => child.name === "slow")?.run.state, "running");
@@ -703,7 +714,7 @@ for (const held of [false, true]) {
   test(`stopping remaining grouped members ${held ? "releases held results" : "has no delivery"}`, async (t) => {
     const h = await harness("batch");
     t.after(() => h.manager.shutdown());
-    await h.manager.launchBatch([assignment("one", held ? "complete" : "hold"), assignment("two")]);
+    await launchGrouped(h, [assignment("one", held ? "complete" : "hold"), assignment("two")]);
     if (held) await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
     else await h.manager.stop("one");
     await h.manager.stop("two");
@@ -716,7 +727,7 @@ for (const held of [false, true]) {
 test("grouped questions remain immediate and waiting members hold the group open", async (t) => {
   const h = await harness("question");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch([assignment("one"), assignment("two")]);
+  await launchGrouped(h, [assignment("one"), assignment("two")]);
   await h.waitFor(() => h.deliveries.length === 2);
   assert(h.deliveries.every((delivery) => delivery.kind === "question"));
   await h.manager.answer("one", "question-1", "A");
@@ -731,7 +742,7 @@ test("grouped questions remain immediate and waiting members hold the group open
 test("grouped process loss is reported immediately without stopping siblings", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch([assignment("lost", "exit"), assignment("other")]);
+  await launchGrouped(h, [assignment("lost", "exit"), assignment("other")]);
   await h.waitFor(() => h.deliveries.length === 1);
   assert.equal(h.deliveries[0].child.run.state, "interrupted");
   assert.equal(h.manager.snapshot()[1].run.state, "running");
@@ -743,7 +754,7 @@ test("grouped process loss is reported immediately without stopping siblings", a
 test("send releases an individual held result and leaves its group", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await h.manager.launchBatch([assignment("one", "complete"), assignment("two")]);
+  await launchGrouped(h, [assignment("one", "complete"), assignment("two")]);
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
   const before = h.manager.snapshot()[0];
   await h.manager.send("one", "outcome=hold");
@@ -757,7 +768,7 @@ test("send releases an individual held result and leaves its group", async (t) =
 
 test("restore releases held completed results once after runtime activation, without replay", async (t) => {
   const h = await harness("batch");
-  await h.manager.launchBatch([assignment("one", "complete"), assignment("two")]);
+  await launchGrouped(h, [assignment("one", "complete"), assignment("two")]);
   await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
   const saved = [...h.records.values()];
   await h.manager.shutdown();
@@ -767,6 +778,7 @@ test("restore releases held completed results once after runtime activation, wit
   restored.releaseHeld();
   restored.releaseHeld();
   assert.equal(h.groups.length, 1);
+  assert.deepEqual(h.groupRestored, [true]);
   assert.deepEqual(h.groups[0].map((child) => child.run.state), ["completed", "interrupted"]);
   assert(restored.snapshot().every((child) => child.run.delivered));
   const again = new Manager({ ...h.options, restored: [...h.records.values()] });
@@ -776,25 +788,239 @@ test("restore releases held completed results once after runtime activation, wit
   assert.equal(h.deliveries.length, 0);
 });
 
-test("batch name and capacity validation starts nothing; startup errors remain per-member", async (t) => {
+test("registration validates every target before changing delivery, accepts IDs, and detects overlapping groups", async (t) => {
   const h = await harness("batch");
   t.after(() => h.manager.shutdown());
-  await assert.rejects(h.manager.launchBatch([assignment("same"), assignment("same")]), /already used/);
-  await assert.rejects(h.manager.launchBatch(Array.from({ length: 65 }, (_, i) => assignment(`child-${i}`))), /64 assignments/);
-  assert.equal(h.manager.snapshot().length, 0);
-  await assert.rejects(stat(join(h.directory, "prompts.jsonl")), { code: "ENOENT" });
-  const outcomes = await h.manager.launchBatch([assignment("good", "complete"), { ...assignment("bad"), model: "missing/model" }]);
-  assert.equal(outcomes[0].error, undefined);
-  assert.match(outcomes[1].error!, /exactly one/);
+  const [one, two, three] = await Promise.all(["one", "two", "three"].map((name) => h.manager.launch(assignment(name))));
+  assert.throws(() => h.manager.notifyWhenDone(["one", "missing"]), /Unknown child/);
+  assert.throws(() => h.manager.notifyWhenDone(["one", one.id]), /selected more than once/);
+  assert.throws(() => h.manager.notifyWhenDone([]), /between 1 and 64/);
+  assert(h.manager.snapshot().every((child) => !child.run.groupId));
+  const first = h.manager.notifyWhenDone([one.id, two.id]);
+  assert.match(first, /grouped for: one, two/);
+  const id = h.manager.snapshot()[0].run.groupId;
+  assert.match(h.manager.notifyWhenDone(["two", "one"]), /grouped for: two, one/);
+  assert.equal(h.manager.snapshot()[0].run.groupId, id);
+  assert.throws(() => h.manager.notifyWhenDone(["one", three.id]), /different members/);
+  assert.throws(() => h.manager.notifyWhenDone(["one"]), /different members/);
+  assert.equal(h.manager.snapshot()[2].run.groupId, undefined);
+  await h.manager.send("one", "outcome=complete");
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed");
+  assert.match(h.manager.notifyWhenDone(["one", "two"]), /grouped for: one, two/);
+  const stop = await h.manager.stop("one");
+  assert.match(stop.stopNotice, /No active work.*result remains held/);
+  assert.equal(h.manager.snapshot()[0].run.groupId, id);
+  await h.manager.stop("two");
+  assert.equal(h.groups.length, 1);
+  assert(h.manager.snapshot().every((child) => !child.run.groupId));
+  assert.match(h.manager.notifyWhenDone(["one", "two"]), /Nothing to group/);
+});
+
+test("registration omits already reported results and unselected children still notify", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await Promise.all(["early", "selected", "other"].map((name) => h.manager.launch(assignment(name))));
+  await h.manager.send("early", "outcome=complete");
+  await h.waitFor(() => h.deliveries.length === 1);
+  assert.match(h.manager.notifyWhenDone(["early", "selected"]), /grouped for: selected\.[\s\S]*Not added \(already finished\): early/);
+  await h.manager.send("other", "outcome=complete");
+  await h.waitFor(() => h.deliveries.length === 2);
+  await h.manager.send("selected", "outcome=complete");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.deepEqual(h.groups[0].map((child) => child.name), ["selected"]);
+  h.manager.releaseHeld();
+  assert.equal(h.groups.length, 1);
+});
+
+test("independent startup attempts keep successful siblings when another fails", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  const outcomes = await Promise.allSettled([h.manager.launch(assignment("good")), h.manager.launch({ ...assignment("bad"), model: "missing/model" })]);
+  assert.equal(outcomes[0].status, "fulfilled");
+  assert.equal(outcomes[1].status, "rejected");
+  assert.match(h.manager.notifyWhenDone(["good", "bad"]), /Not added \(already finished\): bad/);
+  await h.manager.send("good", "outcome=complete");
   await h.waitFor(() => h.groups.length === 1);
   assert.deepEqual(h.groups[0].map((child) => child.name), ["good"]);
-  assert.equal(h.deliveries.length, 0);
-  await assert.rejects(h.manager.launchBatch([assignment("good"), assignment("new")]), /already used/);
-  assert.equal(h.manager.snapshot().length, 2);
-  await h.manager.launch(assignment("existing"));
-  const before = h.manager.snapshot();
-  await assert.rejects(h.manager.launchBatch(Array.from({ length: 64 }, (_, i) => assignment(`extra-${i}`))), /64 assignments/);
-  assert.deepEqual(h.manager.snapshot(), before, "existing active assignments count against the whole batch reservation");
+});
+
+test("registration during settlement is accepted; a pending replacement rejects until its run swaps", async (t) => {
+  const settling = await harness("settling-race-group");
+  const switching = await harness("switch-slow");
+  t.after(() => Promise.all([settling.manager.shutdown(), switching.manager.shutdown()]));
+  const child = await settling.manager.launch({ ...assignment("worker"), task: "outcome=complete" });
+  await settling.manager.launch({ ...assignment("second"), task: "outcome=hold" });
+  await settling.waitFor(() => settling.manager.snapshot()[0].activity === "settling");
+  assert.match(settling.manager.notifyWhenDone([child.name, "second"]), /grouped for: worker, second/);
+  await settling.waitFor(() => settling.manager.snapshot()[0].run.state === "completed");
+  assert.equal(settling.groups.length, 0, "a registration during result extraction still holds the result");
+  assert.notEqual(settling.manager.snapshot()[0].run.groupId, undefined);
+  await settling.manager.stop("second");
+  assert.deepEqual(settling.groups[0].map((member) => member.name), ["worker", "second"]);
+
+  const settled = await switching.launch();
+  await switching.waitFor(() => switching.deliveries.length === 1 && switching.manager.snapshot()[0].connected === false);
+  const replacing = switching.manager.send(settled.id, "Replacement", undefined, "local/next:low");
+  assert.throws(() => switching.manager.notifyWhenDone([settled.name]), /follow-up is replacing its assignment.*Retry once/);
+  const replaced = await replacing;
+  assert.equal(replaced.run.number, 2);
+  assert.equal(replaced.run.groupId, undefined);
+});
+
+test("explicit stop during startup retains a stopped member until its group closes", async (t) => {
+  const h = await harness("startup-race");
+  t.after(() => h.manager.shutdown());
+  const one = h.manager.launch({ ...assignment("one"), task: "outcome=hold" });
+  const two = h.manager.launch({ ...assignment("two"), task: "outcome=hold" });
+  assert.match(h.manager.notifyWhenDone(["one", "two"]), /grouped for: one, two/);
+  const stopped = await h.manager.stop("one");
+  await assert.rejects(one, /cancel|abort|active|closed|changing/i);
+  assert.equal(stopped.run.state, "cancelled");
+  await two;
+  assert.notEqual(h.manager.snapshot().find((child) => child.name === "one")!.run.groupId, undefined);
+  await h.manager.send("two", "outcome=complete");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.deepEqual(h.groups[0].map((child) => [child.name, child.run.state]).sort(), [["one", "cancelled"], ["two", "completed"]]);
+  assert.deepEqual(h.groupRestored, [false]);
+});
+
+test("caller cancellation during startup removes its member without an explicit stopped row", async (t) => {
+  const h = await harness("startup-race");
+  t.after(() => h.manager.shutdown());
+  const controller = new AbortController();
+  const one = h.manager.launch({ ...assignment("one"), task: "outcome=hold" }, controller.signal);
+  const two = h.manager.launch({ ...assignment("two"), task: "outcome=hold" });
+  assert.match(h.manager.notifyWhenDone(["one", "two"]), /grouped for: one, two/);
+  controller.abort();
+  await assert.rejects(one, /cancel|abort|active|closed|changing/i);
+  await two;
+  const cancelled = h.manager.snapshot().find((child) => child.name === "one")!;
+  assert.equal(cancelled.run.state, "cancelled");
+  assert.equal(cancelled.run.groupId, undefined, "only an explicit parent stop keeps a stopped member");
+  await h.manager.stop("two");
+  assert.equal(h.groups.length, 0);
+  assert(h.manager.snapshot().every((child) => !child.run.groupId));
+});
+
+test("caller cancellation after prompt submission removes its group member", async (t) => {
+  const h = await harness("startup-prompt-pending");
+  t.after(() => h.manager.shutdown());
+  const controller = new AbortController();
+  const one = h.manager.launch({ ...assignment("one"), task: "PENDING_PROMPT" }, controller.signal);
+  const two = h.manager.launch(assignment("two"));
+  assert.match(h.manager.notifyWhenDone(["one", "two"]), /grouped for: one, two/);
+  await waitForPrompt(join(h.directory, "prompts.jsonl"), "PENDING_PROMPT");
+  controller.abort();
+  await assert.rejects(one, /cancel|abort|closed|changing|RPC/i);
+  await two;
+  const cancelled = h.manager.snapshot().find((child) => child.name === "one")!;
+  assert.equal(cancelled.run.state, "cancelled");
+  assert.equal(cancelled.run.groupId, undefined, "caller cancellation after prompt submission removes its member");
+  await h.manager.stop("two");
+  assert.equal(h.groups.length, 0);
+});
+
+test("a construction-time foreign group stays quarantined after its locks release, but an explicit follow-up may replace its run", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await launchGrouped(h, [assignment("done", "complete"), assignment("slow")]);
+  await h.waitFor(() => h.manager.snapshot().find((child) => child.name === "done")?.run.state === "completed");
+  const other = new Manager({ ...h.options, restored: [...h.records.values()] });
+  t.after(() => other.shutdown());
+  assert(other.snapshot().every((child) => child.notificationExternal));
+  await h.manager.shutdown();
+  const persisted = JSON.stringify([...h.records.values()]);
+  other.releaseHeld();
+  assert.equal(h.groups.length, 0, "the stale held result is not delivered by the second window");
+  assert.equal(JSON.stringify([...h.records.values()]), persisted, "quarantined delivery state is not persisted");
+  const noOp = await other.stop("slow");
+  assert.match(noOp.stopNotice, /No active work to stop.*Notification group was opened by another window/);
+  assert.equal(JSON.stringify([...h.records.values()]), persisted, "a foreign stop only releases its temporary lock");
+  const slowFollow = await other.send("slow", "outcome=hold");
+  assert.equal(slowFollow.run.number, 2);
+  assert.equal(slowFollow.run.groupId, undefined);
+  assert.equal(slowFollow.notificationExternal, undefined);
+  const followed = await other.send("done", "outcome=hold");
+  assert.equal(followed.run.number, 2);
+  assert.equal(followed.run.groupId, undefined);
+  assert.equal(followed.notificationExternal, undefined);
+  assert.equal(h.deliveries.length, 0, "the old held result is not submitted by the explicit follow-up");
+  assert.equal(h.groups.length, 0);
+});
+
+test("a later foreign lock only defers the originating group's delivery until a normal release event", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  await launchGrouped(h, [assignment("done", "complete"), assignment("slow")]);
+  await h.waitFor(() => h.manager.snapshot().find((child) => child.name === "done")?.run.state === "completed"
+    && h.manager.snapshot().find((child) => child.name === "done")?.connected === false);
+  const done = h.manager.snapshot().find((child) => child.name === "done")!;
+  await waitForMissing(`${done.sessionPath}.lock`);
+  const lock = `${done.sessionPath}.lock`;
+  await writeFile(lock, JSON.stringify({ pid: process.pid, childPid: process.pid }));
+  await h.manager.stop("slow");
+  assert.equal(h.groups.length, 0, "a later foreign lock defers release");
+  const held = h.manager.snapshot().find((child) => child.name === "done")!;
+  assert.equal(held.notificationExternal, undefined, "a temporary lock does not become quarantine");
+  assert.notEqual(held.run.groupId, undefined);
+  assert.equal(held.run.delivered, false);
+  await rm(lock);
+  h.manager.releaseHeld();
+  assert.equal(h.groups.length, 1);
+  assert.deepEqual(h.groupRestored, [false]);
+  assert.deepEqual(h.groups[0].map((child) => [child.name, child.run.state]).sort(), [["done", "completed"], ["slow", "cancelled"]]);
+  assert(h.manager.snapshot().every((child) => !child.run.groupId && child.run.delivered));
+});
+
+test("stopping a completed held member cancels its nonblocking questions without releasing the group", async (t) => {
+  const h = await harness("question-nonblocking");
+  t.after(() => h.manager.shutdown());
+  const first = h.manager.launch({ ...assignment("worker"), task: "Work" });
+  const second = h.manager.launch({ ...assignment("second"), task: "outcome=hold" });
+  assert.match(h.manager.notifyWhenDone(["worker", "second"]), /grouped for: worker, second/);
+  const child = await first;
+  await second;
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed" && h.manager.snapshot()[0].questions?.length === 1);
+  const groupId = h.manager.snapshot()[0].run.groupId;
+  const stop = await h.manager.stop(child.id);
+  assert.match(stop.stopNotice, /No active work to stop.*Open nonblocking questions were cancelled.*result remains held/);
+  assert.equal(h.manager.snapshot()[0].run.state, "completed");
+  assert.equal(h.manager.snapshot()[0].run.groupId, groupId);
+  assert.equal(h.manager.snapshot()[0].questions?.length, 0);
+  assert.equal(h.groups.length, 0);
+  assert.equal(h.deliveries.filter((delivery) => delivery.kind === "question").length, 1);
+  await h.manager.stop("second");
+  assert.equal(h.groups.length, 1);
+});
+
+test("a late nonblocking answer releases a held result and starts an ungrouped run", async (t) => {
+  const h = await harness("question-nonblocking");
+  t.after(() => h.manager.shutdown());
+  const first = h.manager.launch({ ...assignment("worker"), task: "Work" });
+  const second = h.manager.launch({ ...assignment("second"), task: "outcome=hold" });
+  assert.match(h.manager.notifyWhenDone(["worker", "second"]), /grouped for: worker, second/);
+  const child = await first;
+  await second;
+  await h.waitFor(() => h.manager.snapshot()[0].run.state === "completed" && !!h.manager.snapshot()[0].questions?.length);
+  const answered = await h.manager.answer(child.id, "question-1", "Choose A");
+  assert.equal(answered.run.number, 2);
+  assert.equal(answered.run.groupId, undefined);
+  assert.equal(h.deliveries.filter((delivery) => delivery.kind === "result").length, 1, "the old held result is released individually");
+  await h.waitFor(() => h.deliveries.filter((delivery) => delivery.kind === "result").length === 2);
+  assert.equal(h.groups.length, 0, "the replacement run is not grouped");
+});
+
+test("long automatic names group and resolve by ID without a second alias", async (t) => {
+  const h = await harness("batch");
+  t.after(() => h.manager.shutdown());
+  const agent = "a".repeat(300);
+  const child = await h.manager.launch({ agent, instructions: "Work", task: "outcome=hold", model: "local/scripted", thinking: "off" });
+  assert.equal(child.name, agent);
+  assert.match(h.manager.notifyWhenDone([child.id]), new RegExp(`grouped for: ${agent}`));
+  assert.throws(() => h.manager.notifyWhenDone([child.id, child.name]), /selected more than once/);
+  await h.manager.send(child.id, "outcome=complete");
+  await h.waitFor(() => h.groups.length === 1);
+  assert.deepEqual(h.groups[0].map((member) => member.name), [agent]);
 });
 
 for (const mode of ["hold", "exit", "complete", "failure"]) {

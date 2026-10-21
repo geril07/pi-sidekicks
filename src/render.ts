@@ -1,13 +1,13 @@
 import { getMarkdownTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, MouseRegion, Spacer, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import type { ChildSnapshot, RunState } from "./manager.ts";
-import { groupHeadline, elapsedOf, isActive, modelLabel, plain, stateGlyph, stateWord, summary } from "./present.ts";
+import { groupHeadline, elapsedOf, isActive, modelLabel, plain, stateGlyph, stateWord, summary, type GroupDisposition } from "./present.ts";
 
 /** Saved with each delivered message so the transcript view never has to parse model-facing text. */
 export interface DeliveryDetails { kind: "question" | "result"; child: string; state: RunState; questionId?: string; blocking?: boolean; elapsed?: string; body: string }
-export interface GroupDetails { kind: "group"; members: { child: string; state: RunState; body: string }[] }
+export interface GroupDetails { kind: "group"; source?: "notification"; restored?: boolean; members: { child: string; state: RunState; body: string; disposition?: GroupDisposition }[] }
 /** Saved with each tool result for the same reason. */
-export interface ToolDetails { action: string; child?: ChildSnapshot; children?: ChildSnapshot[]; agents?: string[]; outcomes?: { child: ChildSnapshot; error?: string }[] }
+export interface ToolDetails { action: string; notice?: string; child?: ChildSnapshot; children?: ChildSnapshot[]; agents?: string[]; outcomes?: { child: ChildSnapshot; error?: string }[] }
 
 const COLLAPSED_LINES = 3;
 /** Markdown keeps newlines and tabs; every other terminal control character becomes a space. */
@@ -44,7 +44,8 @@ class DeliveryBlock extends Box {
     const expanded = this.expanded();
     if (details.kind === "group") {
       const content = new Container();
-      content.addChild(new Text(`${theme.fg("customMessageLabel", theme.bold("[sidekick]"))} ${groupHeadline(details.members)}`, 0, 0));
+      if (details.restored) content.addChild(new Text("Combined results after session restore.", 0, 0));
+      content.addChild(new Text(`${theme.fg("customMessageLabel", theme.bold("[sidekick]"))} ${groupHeadline(details.members, details.source === "notification")}`, 0, 0));
       for (const member of details.members) {
         content.addChild(new Spacer(1));
         content.addChild(new Text(`${theme.bold(plain(member.child))} ${stateWord(theme, member.state)}`, 0, 0));
@@ -99,6 +100,10 @@ export function renderGroup(message: { details?: unknown }, options: { expanded:
 
 export function renderCall(args: Record<string, unknown>, theme: Theme): Component {
   const text = (key: string) => typeof args[key] === "string" ? args[key] as string : "";
+  if (args.tool === "notify_when_done") {
+    return new Text(`${theme.fg("toolTitle", theme.bold("notify_when_done"))} ${Array.isArray(args.children) ? args.children.map((child) => plain(String(child))).join(", ") : ""}`, 0, 0);
+  }
+  // Retained only for saved batch calls; new launch schemas do not accept tasks.
   const target = Array.isArray(args.tasks) ? `batch of ${args.tasks.length}` : text("agent") || text("child");
   const name = text("agent") && text("name") ? theme.fg("dim", ` as ${plain(text("name"))}`) : "";
   return new Text(`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", text("action") || "?")}${target ? ` ${theme.fg("customMessageText", plain(target))}` : ""}${name}`, 0, 0);
@@ -135,6 +140,7 @@ export function renderResult(result: { content: { type: string; text?: string }[
   const line = (child: ChildSnapshot) => `${stateGlyph(theme, child.run.state)} ${identity(child)} ${stateWord(theme, child.run.state)}${elapsedOf(child.run) ? theme.fg("dim", ` · ${elapsedOf(child.run)}`) : ""}`;
   if (details.child) {
     content.addChild(new Text(row(details.child), 0, 0));
+    if (details.notice) content.addChild(new Text(plain(details.notice), 0, 0));
     if (prompt) content.addChild(promptBlock(prompt, options.expanded, theme));
     return content;
   }

@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { ChildSnapshot } from "../src/manager.ts";
-import { renderCall, renderResult, type ToolDetails } from "../src/render.ts";
+import { renderCall, renderGroup, renderResult, type ToolDetails } from "../src/render.ts";
 
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
 const child = (name: string, state: ChildSnapshot["run"]["state"] = "running"): ChildSnapshot => ({ id: name, name, agent: "worker", model: "openai/gpt-6", thinking: "high",
@@ -90,6 +90,33 @@ test("a batch lists members and a startup failure when collapsed, and each full 
   assert.equal(expanded.match(/SHARED CONTEXT/g)!.length, 2, "each member gets the shared text");
   assert(expanded.indexOf("one worker") < expanded.indexOf("First task") && expanded.indexOf("First task") < expanded.indexOf("two worker"));
   assert(!expanded.includes("to expand"));
+});
+
+test("notify_when_done and a no-op stop render their actual responses", () => {
+  const call = renderCall({ tool: "notify_when_done", children: ["one\x07", "two"] }, theme).render(80).join("\n");
+  assert.match(call, /notify_when_done one\s*,\s*two/);
+  assert(!/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(call));
+  for (const width of [1, 10, 40]) for (const line of renderCall({ tool: "notify_when_done", children: ["x".repeat(200)] }, theme).render(width)) assert(visibleWidth(line) <= width);
+  const notify = screen(renderResult({ content: [{ type: "text", text: "Completion notifications grouped for: one, two.\nThis call did not wait." }] }, { expanded: false }, theme, { args: { children: ["one", "two"] }, isError: false })).join(" ");
+  assert.match(notify, /Completion notifications grouped for: one, two\. This call did not wait\./);
+  const stop = draw({ action: "stop", child: child("scan", "completed"), notice: "No active work to stop; conversation kept. Completed result remains held for grouped notification." }, { action: "stop", child: "scan" });
+  assert.match(stop[0], /scan worker gpt-6:high completed/);
+  assert.equal(stop[1], "No active work to stop; conversation kept. Completed result remains held for grouped notification.");
+});
+
+test("new combined notifications use their source while saved batches keep the old headline", () => {
+  const members = [{ child: "one", state: "completed" as const, body: "First result", disposition: "held-result" as const },
+    { child: "two", state: "cancelled" as const, body: "Sidekick two stopped by parent.", disposition: "stopped" as const }];
+  const visible = (details: object) => screen(renderGroup({ details }, { expanded: false }, theme)!).filter((line) => line.trim()).map((line) => line.trim());
+  const combined = visible({ kind: "group", source: "notification", members });
+  assert.match(combined[0], /\[sidekick\] Combined results for 2 assignments · 1 completed · 1 stopped/);
+  assert(combined.includes("one completed"));
+  assert(combined.includes("two stopped"));
+  assert(combined.includes("First result"));
+  const restored = visible({ kind: "group", source: "notification", restored: true, members });
+  assert.equal(restored[0], "Combined results after session restore.");
+  const historical = visible({ kind: "group", members });
+  assert.match(historical[0], /\[sidekick\] batch of 2 · 1 completed · 1 stopped/, "saved batch messages keep their old headline");
 });
 
 test("terminal control characters never reach the screen", () => {

@@ -20,13 +20,13 @@ export interface ChildSnapshot {
   id: string; name: string; agent: string; model: string; thinking: Thinking;
   /** Only set when the child works somewhere other than the parent's directory. */
   cwd?: string;
-  run: Run; connected: boolean; external?: boolean; activity: string; sessionPath: string;
+  run: Run; connected: boolean; external?: boolean; notificationExternal?: boolean; activity: string; sessionPath: string;
   contextUsage?: ContextUsage;
   questions?: (Question & { runId: string })[];
 }
 interface Child {
   record: ChildRecord; rpc?: RpcConnection; release?: () => void; closing?: Promise<void>;
-  stopRequested: boolean; operation: boolean; settling: boolean; activity: string;
+  stopRequested: boolean; stopExplicit: boolean; operation: boolean; replacing: boolean; settling: boolean; activity: string;
   controller: AbortController; lastError?: string; lastAborted?: boolean; lockContents?: string;
   seenQuestions: Set<string>; contextRequest: number; restoredRequest?: string; closedByUs: boolean;
 }
@@ -35,7 +35,7 @@ export interface ManagerOptions {
   invocation: Invocation; env?: NodeJS.ProcessEnv;
   persist: (record: ChildRecord) => void;
   deliver: (child: ChildSnapshot, kind: "question" | "result", question?: Question & { runId?: string }) => void;
-  deliverGroup?: (members: ChildSnapshot[]) => void;
+  deliverGroup?: (members: ChildSnapshot[], restored: boolean) => void;
   changed: () => void;
   dialog: (child: ChildSnapshot, request: RpcExtensionUIRequest, signal: AbortSignal) => Promise<RpcExtensionUIResponse | undefined>;
   restored?: ChildRecord[];
@@ -45,6 +45,7 @@ const active = (state: RunState) => state === "starting" || state === "running" 
 export const MAX_ACTIVE_ASSIGNMENTS = 64;
 const STOPPED = "Stopped by parent.";
 const DETACHED = "Parent session detached. Continue explicitly; no automatic replay; previous external effects may be unknown.";
+export const isRestoreInterruption = (run: Run) => run.state === "interrupted" && run.result === DETACHED;
 const CHILD_BRIEFING = "Your final message is your result for the parent, who sees nothing else you did: make it self-contained, with evidence (paths, line numbers, commands) and what is still open. If you are blocked, call ask_parent; do not end your final message with a question.";
 /** A leading "/" would run a Pi command or skill in the child, so every parent text gets a label first. */
 export const frame = (kind: string, text: string) => `${kind}:\n${text}`;
@@ -99,6 +100,8 @@ export class Manager {
   private options: ManagerOptions;
   private children = new Map<string, Child>();
   private alive = true;
+  private foreignGroups = new Set<string>();
+  private restoredGroups = new Set<string>();
 
   constructor(options: ManagerOptions) {
     this.options = options;
@@ -109,8 +112,18 @@ export class Manager {
       if (!directory) continue;
       // The saved path is a hint only: older records may predate the storage migration.
       const child = this.child({ ...structuredClone(saved), sessionPath: join(directory, saved.id, "session.jsonl") });
-      if (!this.occupied(child)) this.detachRecord(child);
       this.children.set(saved.id, child);
+    }
+    // Remember observed foreign groups before detach classification can erase their live state.
+    for (const child of this.children.values()) {
+      const groupId = child.record.run.groupId;
+      if (groupId) {
+        this.restoredGroups.add(groupId);
+        if (this.occupied(child)) this.foreignGroups.add(groupId);
+      }
+    }
+    for (const child of this.children.values()) {
+      if (!this.occupied(child) && !this.foreignGroup(child)) this.detachRecord(child);
     }
   }
 
@@ -127,7 +140,7 @@ export class Manager {
   }
 
   private child(record: ChildRecord): Child {
-    return { record, stopRequested: false, operation: false, settling: false, closedByUs: false,
+    return { record, stopRequested: false, stopExplicit: false, operation: false, replacing: false, settling: false, closedByUs: false,
       activity: "detached", controller: new AbortController(), seenQuestions: new Set(), contextRequest: 0 };
   }
 
@@ -147,23 +160,34 @@ export class Manager {
     if (!child.closedByUs) record.questions = [];
   }
 
+  private foreignGroup(child: Child): boolean {
+    return !!child.record.run.groupId && this.foreignGroups.has(child.record.run.groupId);
+  }
+
   private view(child: Child): ChildSnapshot {
     const external = this.occupied(child);
-    if (!external && !child.release) this.detachRecord(child);
+    const notificationExternal = this.foreignGroup(child);
+    if (!external && !notificationExternal && !child.release) this.detachRecord(child);
     const { id, name, agent, model, thinking, run, sessionPath, cwd } = child.record;
     return { id, name, agent, model, thinking, ...(cwd !== this.options.cwd ? { cwd } : {}), run: structuredClone(run), sessionPath,
       contextUsage: structuredClone(child.record.contextUsage),
       connected: !!child.rpc && !child.closing, ...(external ? { external: true } : {}),
+      ...(notificationExternal ? { notificationExternal: true } : {}),
       activity: child.activity, questions: structuredClone(child.record.questions ?? []) };
   }
 
   private assertAlive(): void { if (!this.alive) throw new Error("Parent session is no longer active"); }
-  private find(ref: string): Child {
+  private lookup(ref: string): Child {
     this.assertAlive();
     const child = this.children.get(ref) ?? [...this.children.values()].find((candidate) => candidate.record.name === ref);
     if (!child) throw new Error(`Unknown child: ${ref}. Known: ${[...this.children.values()].map((known) => known.record.name).join(", ") || "none"}`);
+    return child;
+  }
+  private find(ref: string): Child {
+    const child = this.lookup(ref);
     if (this.occupied(child)) throw new Error(`Child session is locked by a live process or an unverified writer: ${child.record.name} is managed by another window (saved status only).`);
-    if (!child.release) this.detachRecord(child);
+    // A quarantined group's saved run belongs to another window; only an explicit continuation may replace it.
+    if (!child.release && !this.foreignGroup(child)) this.detachRecord(child);
     return child;
   }
   private uniqueName(wanted: string | undefined, agent: string, taken = new Set([...this.children.values()].map((child) => child.record.name))): string {
@@ -179,16 +203,16 @@ export class Manager {
   private capacity(count = 1): void {
     this.assertAlive();
     if ([...this.children.values()].filter((child) => child.release && active(child.record.run.state)).length + count > MAX_ACTIVE_ASSIGNMENTS) {
-      throw new Error(`At most ${MAX_ACTIVE_ASSIGNMENTS} assignments may be active, including waiting questions. Stop or finish work before adding this assignment or batch.`);
+      throw new Error(`At most ${MAX_ACTIVE_ASSIGNMENTS} assignments may be active, including waiting questions. Stop or finish work before adding this assignment.`);
     }
   }
   private commit(child: Child, persist = true): void {
     if (!this.alive) return;
-    if (persist && child.release) this.options.persist(structuredClone(child.record));
+    if (persist && child.release && !this.foreignGroup(child)) this.options.persist(structuredClone(child.record));
     this.options.changed();
   }
 
-  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking; cwd?: string; groupId?: string }, signal?: AbortSignal): Promise<ChildSnapshot> {
+  async launch(input: { agent: string; instructions: string; name?: string; task: string; model: string; thinking: Thinking; cwd?: string }, signal?: AbortSignal): Promise<ChildSnapshot> {
     this.capacity();
     const id = randomUUID();
     const name = this.uniqueName(input.name, input.agent);
@@ -197,7 +221,7 @@ export class Manager {
     const child = this.child({ id, ownerSessionId: this.options.ownerSessionId, name,
       agent: input.agent, instructions: input.instructions, cwd: input.cwd ?? this.options.cwd,
       sessionPath: join(directory, id, "session.jsonl"), sessionLeafId: null, model: input.model, thinking: input.thinking,
-      run: { groupId: input.groupId, id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 } });
+      run: { id: randomUUID(), number: 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 } });
     this.children.set(id, child);
     this.acquire(child);
     this.commit(child);
@@ -209,8 +233,19 @@ export class Manager {
 
   async send(id: string, message: string, signal?: AbortSignal, model?: string): Promise<ChildSnapshot> {
     const child = this.find(id);
+    if (child.replacing) throw new Error("Child is changing state; retry after it settles.");
+    child.replacing = !active(child.record.run.state);
+    if (child.replacing) { child.stopRequested = false; child.stopExplicit = false; }
+    try { return await this.sendToChild(child, message, signal, model); }
+    finally { child.replacing = false; }
+  }
+
+  private async sendToChild(child: Child, message: string, signal?: AbortSignal, model?: string): Promise<ChildSnapshot> {
     // A follow-up often arrives just as the finished process is closing; wait, then reopen.
     if (child.closing) await child.closing;
+    signal?.throwIfAborted();
+    this.assertAlive();
+    if (child.stopRequested) throw new Error("Continuation cancelled");
     if (model !== undefined && active(child.record.run.state)) throw new Error("Model changes require a finished child. Stop it or wait for completion first.");
     if (child.record.run.state === "waiting" || child.record.run.question) throw new Error("Answer the pending question by questionId, or stop the child.");
     if (child.operation || child.settling || child.closing) throw new Error("Child is changing state; retry after it settles.");
@@ -230,8 +265,7 @@ export class Manager {
         const saved = { model: child.record.model, thinking: child.record.thinking, contextUsage: child.record.contextUsage };
         const connected = !!child.rpc;
         child.operation = true;
-        child.stopRequested = false;
-        const abort = () => { void this.stop(child.record.id).catch(() => {}); };
+        const abort = () => { void this.stop(child.record.id, false).catch(() => {}); };
         signal?.addEventListener("abort", abort, { once: true });
         try {
           signal?.throwIfAborted();
@@ -242,7 +276,7 @@ export class Manager {
           signal?.throwIfAborted();
           if (child.stopRequested) throw new Error("Model change cancelled");
           this.capacity();
-          this.commit(child);
+          if (!this.foreignGroup(child)) this.commit(child);
         } catch (error) {
           // A failed second RPC mutation must not leave a live process on a different selection.
           if (connected && child.rpc && this.alive && !child.stopRequested && !signal?.aborted) {
@@ -250,14 +284,14 @@ export class Manager {
             catch { await this.disconnect(child); }
           } else await this.disconnect(child);
           Object.assign(child.record, saved);
-          this.commit(child);
+          if (!this.foreignGroup(child)) this.commit(child);
           throw error;
         } finally {
           signal?.removeEventListener("abort", abort);
           child.operation = false;
         }
       }
-      if (previous.groupId && previous.state === "completed" && !previous.delivered) {
+      if (previous.groupId && !this.foreignGroup(child) && previous.state === "completed" && !previous.delivered) {
         previous.delivered = true;
         previousView.run.delivered = true;
         this.options.deliver(previousView, "result");
@@ -271,6 +305,7 @@ export class Manager {
         return match ? [Number(match[1])] : [];
       });
       child.record.run = { id: randomUUID(), number: Math.max(previous.number, ...numbers) + 1, state: "starting", delivered: false, startedAt: Date.now(), turns: 0, tools: 0 };
+      child.replacing = false;
       this.releaseHeld();
       child.lastError = undefined;
       this.commit(child);
@@ -288,7 +323,6 @@ export class Manager {
     if (question) {
       // A nonblocking answer to a finished run is new work: revive it like send, not a note nobody reads.
       if (run.state === "completed") {
-        if (child.closing) await child.closing;
         if (child.stopRequested || !child.record.questions?.some((q) => q.id === questionId)) {
           throw new Error("No matching settled question: answer is stale, duplicate, or not ready.");
         }
@@ -322,9 +356,10 @@ export class Manager {
   private async start(child: Child, message: string, signal?: AbortSignal): Promise<void> {
     child.operation = true;
     child.stopRequested = false;
+    child.stopExplicit = false;
     child.lastAborted = false;
     let submitted = false;
-    const abort = () => { void this.stop(child.record.id).catch(() => {}); };
+    const abort = () => { void this.stop(child.record.id, false).catch(() => {}); };
     signal?.addEventListener("abort", abort, { once: true });
     try {
       signal?.throwIfAborted();
@@ -339,7 +374,7 @@ export class Manager {
       const accepted = await child.rpc!.request({ type: "prompt", message });
       if (accepted.disposition !== "started") throw new Error(`Child prompt was ${accepted.disposition}, not started`);
     } catch (error) {
-      if (this.alive) this.finish(child, child.stopRequested ? "cancelled" : submitted ? "interrupted" : "failed", errorText(error), false);
+      if (this.alive) this.finish(child, child.stopRequested ? "cancelled" : submitted ? "interrupted" : "failed", errorText(error), child.stopExplicit);
       await this.disconnect(child);
       throw error;
     } finally {
@@ -536,7 +571,8 @@ export class Manager {
   }
 
   private async settle(child: Child, aborted: boolean): Promise<void> {
-    if (child.stopRequested) { child.settling = false; this.finish(child, "cancelled", STOPPED); return; }
+    // A caller cancellation must remove its group member; only an explicit parent stop keeps a stopped row.
+    if (child.stopRequested) { child.settling = false; this.finish(child, "cancelled", STOPPED, child.stopExplicit); return; }
     const run = child.record.run;
     if (run.question) {
       run.state = "waiting";
@@ -555,7 +591,7 @@ export class Manager {
     const result = await child.rpc!.request({ type: "get_last_assistant_text" });
     child.settling = false;
     if (!this.alive) return;
-    if (child.stopRequested) this.finish(child, "cancelled", STOPPED);
+    if (child.stopRequested) this.finish(child, "cancelled", STOPPED, child.stopExplicit);
     else if (child.lastError) this.finish(child, "failed", child.lastError);
     else if (aborted || child.lastAborted) this.finish(child, "interrupted", "Child aborted without a parent stop or question.");
     else this.finish(child, "completed", result.text ?? "(No assistant text)");
@@ -600,14 +636,61 @@ export class Manager {
     }
   }
 
+  private groupMembers(id: string): Child[] {
+    return [...this.children.values()].filter((child) => child.record.run.groupId === id);
+  }
+
+  private groupOpen(id: string): boolean {
+    return this.groupMembers(id).some(({ record: { run } }) => active(run.state) || (run.state === "completed" && !run.delivered));
+  }
+
+  notifyWhenDone(handles: string[], signal?: AbortSignal): string {
+    this.assertAlive();
+    signal?.throwIfAborted();
+    if (!Array.isArray(handles) || handles.length < 1 || handles.length > MAX_ACTIVE_ASSIGNMENTS || handles.some((handle) => typeof handle !== "string")) {
+      throw new Error("children must contain between 1 and 64 child names or IDs.");
+    }
+    const selected = handles.map((handle) => this.lookup(handle));
+    const seen = new Set<Child>();
+    for (const child of selected) {
+      const name = JSON.stringify(child.record.name);
+      if (seen.has(child)) throw new Error(`Child selected more than once: ${name}.`);
+      seen.add(child);
+      if (this.foreignGroup(child)) throw new Error(`Cannot group ${name}: its notification group was opened by another window; this window will not deliver it. Reload after that window releases the children.`);
+      if (this.occupied(child)) throw new Error(`Cannot group ${name}: it is managed by another window or its ownership cannot be verified.`);
+      if (child.replacing) throw new Error(`Cannot group ${name}: a follow-up is replacing its assignment. Retry once after the send or answer call returns.`);
+    }
+    const members = selected.filter((child) => active(child.record.run.state) || (child.record.run.groupId && this.groupOpen(child.record.run.groupId)));
+    const omitted = selected.filter((child) => !members.includes(child));
+    const existing = members.find((child) => child.record.run.groupId && this.groupOpen(child.record.run.groupId));
+    if (existing) {
+      const group = this.groupMembers(existing.record.run.groupId!);
+      if (group.length !== members.length || members.some((child) => !group.includes(child))) {
+        throw new Error(`Cannot group ${JSON.stringify(existing.record.name)}: its current assignment already belongs to an open notification group with different members (${group.map((child) => JSON.stringify(child.record.name)).join(", ")}). Register the other children separately.`);
+      }
+    }
+    if (!members.length) return "Nothing to group: all selected assignments have already finished.\nEarlier notifications are not repeated.";
+    const groupId = existing?.record.run.groupId ?? randomUUID();
+    // Eligible new members are owned active runs; no asynchronous step separates validation and publication.
+    for (const child of members) {
+      if (child.record.run.groupId !== groupId) {
+        child.record.run.groupId = groupId;
+        this.commit(child);
+      }
+    }
+    return [`Completion notifications grouped for: ${members.map((child) => child.record.name).join(", ")}.`,
+      "This call did not wait for completion. Successful results will arrive together; questions, failures, and interruptions still arrive immediately.",
+      ...(omitted.length ? [`Not added (already finished): ${omitted.map((child) => child.record.name).join(", ")}.`] : [])].join("\n");
+  }
+
   releaseHeld(): void {
     if (!this.alive || !this.options.deliverGroup) return;
-    const groups = new Set(this.snapshot().filter((child) => !child.external).map((child) => child.run.groupId).filter((id) => id !== undefined));
+    const groups = new Set([...this.children.values()].map((child) => child.record.run.groupId).filter((id) => id !== undefined));
     for (const id of groups) {
-      const members = [...this.children.values()].filter((child) => child.record.run.groupId === id);
+      if (this.foreignGroups.has(id)) continue;
+      const members = this.groupMembers(id);
       if (members.some((child) => this.occupied(child) || active(child.record.run.state))) continue;
       const held = members.filter((child) => child.record.run.state === "completed" && !child.record.run.delivered);
-      if (!held.length) continue;
       const acquired: Child[] = [];
       const release = () => { for (const child of acquired) { child.release?.(); child.release = undefined; } };
       try {
@@ -615,50 +698,55 @@ export class Manager {
           if (!child.release) { this.acquire(child); acquired.push(child); }
         }
       } catch {
-        // Another window may have acquired a member since the snapshot; leave the group undelivered.
+        // A later foreign lock only defers delivery; it must not quarantine our own group.
         release();
         continue;
       }
       try {
-        this.options.deliverGroup(members.map((child) => this.view(child)));
-        for (const child of held) { child.record.run.delivered = true; this.commit(child); }
+        if (held.length) this.options.deliverGroup(members.map((child) => this.view(child)), this.restoredGroups.has(id));
+        for (const child of members) {
+          if (held.includes(child)) child.record.run.delivered = true;
+          child.record.run.groupId = undefined;
+          this.commit(child);
+        }
+        this.restoredGroups.delete(id);
       } finally { release(); }
     }
   }
 
-  async launchBatch(inputs: Parameters<Manager["launch"]>[0][], results: "together" | "each" = "together", signal?: AbortSignal): Promise<{ child: ChildSnapshot; error?: string }[]> {
-    this.capacity(inputs.length);
-    const taken = new Set(this.snapshot().map((child) => child.name));
-    const groupId = randomUUID();
-    const named = inputs.map((input) => {
-      const name = this.uniqueName(input.name, input.agent, taken);
-      taken.add(name);
-      return { ...input, name, groupId: results === "together" ? groupId : undefined };
-    });
-    return Promise.all(named.map(async (input) => {
-      try { return { child: await this.launch(input, signal) }; }
-      catch (error) {
-        const child = [...this.children.values()].find((child) => child.record.name === input.name);
-        if (!child) throw error;
-        return { child: this.view(child), error: errorText(error) };
-      }
-    }));
-  }
-
-  async stop(id: string): Promise<ChildSnapshot> {
+  async stop(id: string, explicit = true): Promise<ChildSnapshot & { stopNotice: string }> {
     const child = this.find(id);
     this.acquire(child);
-    child.stopRequested = true;
+    const foreign = this.foreignGroup(child);
+    const wasActive = active(child.record.run.state) && !foreign;
+    const hadQuestions = !!child.record.questions?.length;
     child.record.questions = [];
+    if (foreign) {
+      // Cancelling open nonblocking questions is allowed; the run, membership and delivery stay the owner's.
+      if (hadQuestions) this.options.persist(structuredClone(child.record));
+      this.commit(child, false);
+      await this.disconnect(child);
+      const snapshot = this.view(child);
+      const stopNotice = ["No active work to stop; conversation kept.",
+        ...(hadQuestions ? ["Open nonblocking questions were cancelled."] : []),
+        "Notification group was opened by another window; this window will not deliver it. Reload after that window releases the children."].join(" ");
+      return { ...snapshot, stopNotice };
+    }
+    child.stopRequested = true;
+    child.stopExplicit ||= explicit;
     child.controller.abort();
     if (child.rpc && !child.closing) {
       try { await child.rpc.request({ type: "clear_queue" }, 1000); await child.rpc.request({ type: "abort" }, 2000); }
       catch { /* Termination below is also required when RPC is unresponsive. */ }
     }
-    this.finish(child, "cancelled", STOPPED);
+    this.finish(child, "cancelled", STOPPED, child.stopExplicit);
     this.commit(child);
     await this.disconnect(child);
-    return this.view(child);
+    const snapshot = this.view(child);
+    const stopNotice = wasActive ? "Stopped; conversation kept." : ["No active work to stop; conversation kept.",
+      ...(hadQuestions ? ["Open nonblocking questions were cancelled."] : []),
+      ...(snapshot.run.groupId && snapshot.run.state === "completed" && !snapshot.run.delivered ? ["Completed result remains held for grouped notification."] : [])].join(" ");
+    return { ...snapshot, stopNotice };
   }
 
   /** Close a finished child's process, but never a run that started while it was settling. */
@@ -694,7 +782,7 @@ export class Manager {
         child.record.run = { ...child.record.run, state: "interrupted", endedAt: Date.now(), question: undefined,
           result: DETACHED, delivered: true };
       }
-      if (persist) this.options.persist(structuredClone(child.record));
+      if (persist && !this.foreignGroup(child)) this.options.persist(structuredClone(child.record));
     }
     await Promise.all(children.map((child) => this.disconnect(child)));
   }

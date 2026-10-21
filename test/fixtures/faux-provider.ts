@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -78,7 +78,38 @@ export default function fixture(pi: ExtensionAPI): void {
   const script = async (context: TranscriptContext, _options: unknown, state: { callCount: number }) => {
     log({ call: state.callCount, child: process.env.PI_SIDEKICKS_CHILD ?? "parent", cwd: process.cwd(),
       lastUser: context.messages.filter((message) => message.role === "user").at(-1)?.content,
-      transcript: ["nonblocking", "model-switch", "lifecycle"].includes(scenario) ? JSON.stringify(context.messages) : undefined });
+      transcript: ["nonblocking", "model-switch", "lifecycle", "api-parent"].includes(scenario) ? JSON.stringify(context.messages) : undefined });
+    if (scenario === "api-parent") {
+      const textOf = (message: TranscriptContext["messages"][number]) => typeof message.content === "string" ? message.content : message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      if (process.env.PI_SIDEKICKS_CHILD) {
+        const prompt = context.messages.filter((message) => message.role === "user").at(-1);
+        const name = prompt && /GATE:(\w+)/.exec(textOf(prompt))?.[1];
+        if (name && process.env.SIDEKICKS_TEST_GATE) {
+          while (!existsSync(`${process.env.SIDEKICKS_TEST_GATE}-${name}`)) await delay(10);
+        }
+        return fauxAssistantMessage(`Child full result.\n${"Detail ".repeat(40)}\nEvidence: local scripted provider.`);
+      }
+      const request = context.messages.findLastIndex((message) => message.role === "user" && /^(API_CALL|CODE_CALL) /.test(textOf(message)));
+      if (request >= 0 && !context.messages.slice(request + 1).some((message) => message.role === "assistant" && message.content.some((block) => block.type === "toolCall"))) {
+        const prompt = textOf(context.messages[request]);
+        if (prompt.startsWith("CODE_CALL ")) return fauxAssistantMessage(fauxToolCall("codemode", { code: prompt.slice("CODE_CALL ".length) }), { stopReason: "toolUse" });
+        const call = JSON.parse(prompt.slice("API_CALL ".length));
+        return fauxAssistantMessage(fauxToolCall(call.tool, call.args), { stopReason: "toolUse" });
+      }
+      return fauxAssistantMessage("Parent received the API response or child notification.");
+    }
+    if (scenario === "group-parent") {
+      if (process.env.PI_SIDEKICKS_CHILD) {
+        // Keep both children alive until the parent has registered their notification group.
+        if (process.env.SIDEKICKS_TEST_GATE) while (!existsSync(process.env.SIDEKICKS_TEST_GATE)) await delay(10);
+        else await delay(600);
+        return fauxAssistantMessage(`Child full result.\n${"Detail ".repeat(40)}\nEvidence: local scripted provider.`);
+      }
+      if (state.callCount === 1) return fauxAssistantMessage(["one", "two"].map((name) => fauxToolCall("subagent", { action: "launch", agent: "worker", name, task: "Work" })), { stopReason: "toolUse" });
+      if (state.callCount === 2) return fauxAssistantMessage(fauxToolCall("notify_when_done", { children: ["one", "two"] }), { stopReason: "toolUse" });
+      if (process.env.SIDEKICKS_TEST_GATE) writeFileSync(process.env.SIDEKICKS_TEST_GATE, "");
+      return fauxAssistantMessage("FINAL: grouped results received.");
+    }
     if (scenario === "model-switch" || scenario === "lifecycle") {
       const textOf = (message: TranscriptContext["messages"][number]) => typeof message.content === "string" ? message.content : message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
       if (process.env.PI_SIDEKICKS_CHILD) {
@@ -148,6 +179,6 @@ export default function fixture(pi: ExtensionAPI): void {
     }
     return fauxAssistantMessage(`Continued in the same conversation (${state.callCount}).`);
   };
-  faux.setResponses(Array.from({ length: ["model-switch", "lifecycle", "busy-parent"].includes(scenario) ? 60 : 12 }, () => script));
+  faux.setResponses(Array.from({ length: scenario === "api-parent" ? 40 : ["model-switch", "lifecycle", "busy-parent"].includes(scenario) ? 60 : 12 }, () => script));
   next?.setResponses(Array.from({ length: 12 }, () => script));
 }
