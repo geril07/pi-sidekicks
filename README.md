@@ -24,9 +24,9 @@ The old extension is not hidden or disabled automatically.
 
 ## Use
 
-The parent gets two tools, `subagent` and `notify_when_done`; delegation follows the
+The parent gets two tools, `subagent` and `subagent_group_results`; delegation follows the
 parent's instructions. Both are `direct`, so codemode can call them as `tools.subagent`
-and `tools.notify_when_done` when enabled.
+and `tools.subagent_group_results` when enabled.
 
 | Action | Required fields | Behavior |
 |---|---|---|
@@ -36,7 +36,7 @@ and `tools.notify_when_done` when enabled.
 | `stop` | `child` | Cancels active work and closes the process, retaining the transcript. It does not discard a completed result held for grouped notification. The tool result is the outcome; no separate message follows. |
 | `status` | none | Lists children, latest outcomes, pending questions, and available agents. |
 
-`notify_when_done` takes `children`: 1 to 64 child names or IDs. It registers the
+`subagent_group_results` takes `children`: 1 to 64 child names or IDs. It registers the
 selected current assignments as one future-success notification group and returns
 immediately. It does not wait, launch children, or recover an early result.
 Children are addressed by `name` or stable ID; a name defaults to the agent name,
@@ -93,7 +93,7 @@ for (let i = 0; i < outcomes.length; i++) {
     result: outcome.status === "fulfilled" ? outcome.value : String(outcome.reason) });
 }
 const started = tasks.filter((_, i) => outcomes[i].status === "fulfilled");
-if (started.length) text(await tools.notify_when_done({ children: started.map(task => task.name) }));
+if (started.length) text(await tools.subagent_group_results({ children: started.map(task => task.name) }));
 ```
 
 A launch or notify call returns without waiting for task completion. A fulfilled launch
@@ -144,7 +144,7 @@ and remains available for follow-up. Questions and results arrive as transcript 
   collapsible `[sidekick]` blocks; previews are bounded per member, and expansion shows
   each full result as Markdown. Saved historical batch messages keep their old view.
   Tool calls render as `subagent <action> <target>` or
-  `notify_when_done <handles>`, with no prompt text. Under launch, send,
+  `subagent_group_results <handles>`, with no prompt text. Under launch, send,
   and answer rows, a line shows `name agent model` (no state or time, which would go stale; a
   final state such as `stopped` is shown) and then the prompt you wrote: three wrapped rows
   collapsed, full Markdown when expanded (click the row in fullscreen mode, or the Pi expand key).

@@ -106,7 +106,7 @@ export default function fixture(pi: ExtensionAPI): void {
         return fauxAssistantMessage(`Child full result.\n${"Detail ".repeat(40)}\nEvidence: local scripted provider.`);
       }
       if (state.callCount === 1) return fauxAssistantMessage(["one", "two"].map((name) => fauxToolCall("subagent", { action: "launch", agent: "worker", name, task: "Work" })), { stopReason: "toolUse" });
-      if (state.callCount === 2) return fauxAssistantMessage(fauxToolCall("notify_when_done", { children: ["one", "two"] }), { stopReason: "toolUse" });
+      if (state.callCount === 2) return fauxAssistantMessage(fauxToolCall("subagent_group_results", { children: ["one", "two"] }), { stopReason: "toolUse" });
       if (process.env.SIDEKICKS_TEST_GATE) writeFileSync(process.env.SIDEKICKS_TEST_GATE, "");
       return fauxAssistantMessage("FINAL: grouped results received.");
     }

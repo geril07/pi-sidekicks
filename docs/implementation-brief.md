@@ -162,7 +162,7 @@ Duplicate/stale answers fail; completed outcomes stay unchanged.
 
 ### Notification groups
 
-The parent tools are `subagent` and `notify_when_done`, both `direct` so Pi exposes
+The parent tools are `subagent` and `subagent_group_results`, both `direct` so Pi exposes
 them to direct calls and codemode according to its normal tool/codemode settings.
 They remain suppressed inside this package's children; child `ask_parent` stays
 `model-only`, so codemode cannot call it. `launch` has no `tasks`, `shared`, `results`, or
@@ -170,7 +170,7 @@ They remain suppressed inside this package's children; child `ask_parent` stays
 check runs against raw arguments, so removed fields and typos fail rather than being
 stripped by validation. The same check covers both direct and nested calls.
 
-`notify_when_done({children})` resolves 1-64 child names or IDs, rejects duplicate
+`subagent_group_results({children})` resolves 1-64 child names or IDs, rejects duplicate
 resolution (for example a name and ID for one child), foreign ownership, a
 construction-time quarantined group, and a pending run-replacing follow-up. It then
 tags eligible current runs synchronously with one opaque `groupId`; no registry or
@@ -305,7 +305,7 @@ is one block with the `Combined results for N assignment(s)` headline, source an
 disposition metadata, bounded per-member previews, and full Markdown results when
 expanded. Saved historical batch details still render the old `batch of N` headline.
 The tool-call header is `subagent <action> <target>` or
-`notify_when_done <handles>` without the prompt. The launch/send/answer/stop result row
+`subagent_group_results <handles>` without the prompt. The launch/send/answer/stop result row
 is `name agent model`: it is a snapshot taken when the tool returned, so it shows no
 glyph, elapsed time, or live state word, only a final state (`stopped`, `completed`,
 `failed`). A no-op stop also shows its explanatory response. Under it is the parent's

@@ -92,11 +92,11 @@ test("a batch lists members and a startup failure when collapsed, and each full 
   assert(!expanded.includes("to expand"));
 });
 
-test("notify_when_done and a no-op stop render their actual responses", () => {
-  const call = renderCall({ tool: "notify_when_done", children: ["one\x07", "two"] }, theme).render(80).join("\n");
-  assert.match(call, /notify_when_done one\s*,\s*two/);
+test("subagent_group_results and a no-op stop render their actual responses", () => {
+  const call = renderCall({ tool: "subagent_group_results", children: ["one\x07", "two"] }, theme).render(80).join("\n");
+  assert.match(call, /subagent_group_results one\s*,\s*two/);
   assert(!/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(call));
-  for (const width of [1, 10, 40]) for (const line of renderCall({ tool: "notify_when_done", children: ["x".repeat(200)] }, theme).render(width)) assert(visibleWidth(line) <= width);
+  for (const width of [1, 10, 40]) for (const line of renderCall({ tool: "subagent_group_results", children: ["x".repeat(200)] }, theme).render(width)) assert(visibleWidth(line) <= width);
   const notify = screen(renderResult({ content: [{ type: "text", text: "Completion notifications grouped for: one, two.\nThis call did not wait." }] }, { expanded: false }, theme, { args: { children: ["one", "two"] }, isError: false })).join(" ");
   assert.match(notify, /Completion notifications grouped for: one, two\. This call did not wait\./);
   const stop = draw({ action: "stop", child: child("scan", "completed"), notice: "No active work to stop; conversation kept. Completed result remains held for grouped notification." }, { action: "stop", child: "scan" });

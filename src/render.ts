@@ -100,8 +100,8 @@ export function renderGroup(message: { details?: unknown }, options: { expanded:
 
 export function renderCall(args: Record<string, unknown>, theme: Theme): Component {
   const text = (key: string) => typeof args[key] === "string" ? args[key] as string : "";
-  if (args.tool === "notify_when_done") {
-    return new Text(`${theme.fg("toolTitle", theme.bold("notify_when_done"))} ${Array.isArray(args.children) ? args.children.map((child) => plain(String(child))).join(", ") : ""}`, 0, 0);
+  if (args.tool === "subagent_group_results") {
+    return new Text(`${theme.fg("toolTitle", theme.bold("subagent_group_results"))} ${Array.isArray(args.children) ? args.children.map((child) => plain(String(child))).join(", ") : ""}`, 0, 0);
   }
   // Retained only for saved batch calls; new launch schemas do not accept tasks.
   const target = Array.isArray(args.tasks) ? `batch of ${args.tasks.length}` : text("agent") || text("child");
