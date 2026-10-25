@@ -46,9 +46,11 @@ async function smoke(mode: "fullscreen" | "regular", scenario = "orchestrator") 
   try {
     tmux("new-session", "-d", "-s", "qa", "-x", "200", "-y", "56", "-c", directory, command);
     tmux("set-option", "-t", "qa", "remain-on-exit", "on");
-    const startup = await waitFor((text) => text.includes("(sidekicks-test) scripted"), "startup");
+    // Pi omits the provider label when only one provider is available.
+    await waitFor((text) => text.includes("scripted •"), "scripted model footer");
+    const startup = await waitFor((text) => text.includes("skipped 1 invalid agent definition")
+      && text.includes("broken.md: needs a name and a description"), "invalid definition notice");
     assert(!/[▸▾] sidekicks/.test(startup), "widget must stay hidden before any children exist");
-    assert(startup.includes("skipped 1 invalid agent definition") && startup.includes("broken.md: needs a name and a description"), "the user is told about the broken definition");
     writeFileSync(join(directory, "startup.txt"), startup);
     literal("Delegate this task to a worker and answer its question.");
     keys("Enter");
