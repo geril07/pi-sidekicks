@@ -20,13 +20,11 @@ credentials; **this is not a sandbox**.
 
 ## Install
 
-Once the GitHub repository is published:
-
 ```sh
 pi install git:github.com/geril07/pi-sidekicks
 ```
 
-For now, try this checkout without changing Pi settings:
+Or try a local checkout without changing Pi settings:
 
 ```sh
 npm ci --ignore-scripts
