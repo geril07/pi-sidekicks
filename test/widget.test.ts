@@ -82,6 +82,26 @@ test("rows show name, agent, model, state and elapsed time; a failure keeps its 
   assert.equal(widget.render(120).length, 1);
 });
 
+test("expanded storage paths wrap in full and every detail line remains clickable", () => {
+  const folder = `/store/${"long-folder-".repeat(20)}名字/end`;
+  const entry = { ...child("one"), sessionPath: `${folder}/session.jsonl` };
+  const widget = new StatusWidget(() => [entry]);
+  widget.toggle();
+  widget.render(40);
+  widget.handleMouse({ type: "click", button: "left", y: 1 } as TuiMouseEvent);
+  for (const width of [2, 10, 40, 120]) {
+    const lines = widget.render(width);
+    const details = lines.slice(2);
+    assert(details.length > 1);
+    assert.equal(details.map((line) => line.trimStart()).join(""), folder);
+    assert(lines.every((line) => visibleWidth(line) <= width));
+  }
+  const lines = widget.render(40);
+  widget.handleMouse({ type: "click", button: "left", y: lines.length - 1 } as TuiMouseEvent);
+  assert.equal(widget.detailId, undefined);
+  assert.equal(widget.render(40).length, 2);
+});
+
 test("each row shows turns, tools and current/max context on one line without spend or compactions", () => {
   const children = [child("one"), child("two"), child("three")];
   children[0].run = { ...children[0].run, turns: 5, tools: 12 };

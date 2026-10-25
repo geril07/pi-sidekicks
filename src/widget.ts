@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ExtensionEditorComponent } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, type EditorComponent, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { isKeyRelease, type EditorComponent, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { ChildSnapshot } from "./manager.ts";
 import { elapsedOf, isActive, modelLabel, plain, plainStyle, stateGlyph, stateWord, summary, type Style } from "./present.ts";
 
@@ -117,7 +117,9 @@ export class StatusWidget implements Component {
     for (const child of children.slice(first, first + VISIBLE_ROWS)) {
       lines.push(this.row(child, child.id === this.selectedId && this.focused, width));
       this.rowIds.push(child.id);
-      if (child.id === this.detailId) { lines.push(this.detail(child, width)); this.rowIds.push(child.id); }
+      if (child.id === this.detailId) {
+        for (const line of this.detail(child, width)) { lines.push(line); this.rowIds.push(child.id); }
+      }
     }
     const hidden = children.length - first - VISIBLE_ROWS;
     if (hidden > 0) { lines.push(truncateToWidth(style.fg("dim", `   ↓ ${hidden} more`), width)); this.rowIds.push(undefined); }
@@ -144,8 +146,10 @@ export class StatusWidget implements Component {
   }
 
   /** Where the child's transcript and result files live, for finding them from a shell. */
-  private detail(child: ChildSnapshot, width: number): string {
-    return truncateToWidth(this.style.fg("dim", `     ${plain(dirname(child.sessionPath))}`), width);
+  private detail(child: ChildSnapshot, width: number): string[] {
+    const indent = " ".repeat(Math.min(5, Math.max(0, width - 2)));
+    return wrapTextWithAnsi(plain(dirname(child.sessionPath)), Math.max(1, width - indent.length))
+      .map((line) => this.style.fg("dim", `${indent}${line}`));
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
