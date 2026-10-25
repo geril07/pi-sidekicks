@@ -2,7 +2,17 @@
   "name": "pi-sidekicks",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal asynchronous, role-based Pi child agents",
+  "description": "Asynchronous Pi child agents with questions, saved conversations, and grouped results",
+  "license": "MIT",
+  "author": "geril07",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geril07/pi-sidekicks.git"
+  },
+  "homepage": "https://github.com/geril07/pi-sidekicks#readme",
+  "bugs": { "url": "https://github.com/geril07/pi-sidekicks/issues" },
+  "keywords": ["pi-package", "pi-extension", "subagents"],
+  "files": ["src/", "docs/", "scripts/migrate-sidekick-sessions.ts", "README.md", "LICENSE"],
   "type": "module",
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
@@ -12,8 +22,8 @@
     "migrate:sidekick-sessions": "node scripts/migrate-sidekick-sessions.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.3.0 <1.4.0",
-    "@earendil-works/pi-tui": ">=1.3.0 <1.4.0",
+    "@earendil-works/pi-coding-agent": ">=1.3.0 <1.5.0",
+    "@earendil-works/pi-tui": ">=1.3.0 <1.5.0",
     "typebox": "^1.3.27"
   },
   "devDependencies": {

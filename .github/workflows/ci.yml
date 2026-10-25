@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ["1.3.0", "1.4.0"]
+    env:
+      PI_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.19.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Select Pi version
+        if: matrix.pi != '1.3.0'
+        run: >-
+          npm install --no-save --package-lock=false --ignore-scripts
+          @earendil-works/pi-coding-agent@${{ matrix.pi }}
+          @earendil-works/pi-ai@${{ matrix.pi }}
+          @earendil-works/pi-tui@${{ matrix.pi }}
+      - name: Prepare terminal tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          mkdir -p /tmp/opencode
+      - run: npm run check
+      - run: env -u PI_SIDEKICKS_CHILD -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_CHILD_AGENT npm test
+      - run: env -u PI_SIDEKICKS_CHILD -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_CHILD_AGENT npm run test:tui
+      - name: Save test evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-pi-${{ matrix.pi }}
+          path: /tmp/opencode/sidekicks-*/
+          retention-days: 7
